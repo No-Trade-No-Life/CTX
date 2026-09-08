@@ -36,7 +36,22 @@ export type PublicDocument = {
   id: string
   owner_id: string
   title: string
+  metadata: PublishedMetadata
+  language: string
+  is_metadata_fallback: boolean
+  metadata_status: "queued" | "running" | "succeeded" | "failed" | null
   published_at: number
+}
+
+export type PublishedMetadata = {
+  description: string
+  summary: string
+  short_summary: string
+  tags: string[]
+  inferred_date: string
+  inferred_lang: string
+  key_points: string[]
+  audience: string
 }
 
 export type PublicDocumentDetail = {
@@ -47,14 +62,13 @@ export type PublicDocumentDetail = {
   source_language: string
   language: string
   available_languages: string[]
+  metadata: PublishedMetadata
+  is_metadata_fallback: boolean
+  metadata_status: "queued" | "running" | "succeeded" | "failed" | null
   requested_language: string | null
   translation_status: "queued" | "running" | "succeeded" | "failed" | null
   is_translation_fallback: boolean
   published_at: number
-}
-
-export type LanguagePreferences = {
-  languages: string[]
 }
 
 export type AiConfiguration = {
@@ -67,7 +81,7 @@ export type AiRun = {
   id: string
   document_id: string
   source_revision_id: string
-  task: "metadata" | "summary" | "detect_language"
+  task: "metadata" | "detect_language"
   output: string
   proposed_content: string | null
   created_at: number

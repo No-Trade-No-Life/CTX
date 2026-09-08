@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use thiserror::Error;
 
 use crate::{
-    db::{AiCredentials, AiRequest, Database, DocumentDetail},
+    db::{AiCredentials, AiRequest, Database, DocumentDetail, PublishedMetadata},
     language::normalize_language_tag,
 };
 
@@ -13,7 +13,6 @@ use crate::{
 #[serde(rename_all = "snake_case")]
 pub enum AiTask {
     Metadata,
-    Summary,
     DetectLanguage,
 }
 
@@ -21,7 +20,6 @@ impl AiTask {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Metadata => "metadata",
-            Self::Summary => "summary",
             Self::DetectLanguage => "detect_language",
         }
     }
@@ -36,11 +34,12 @@ pub struct AiOutput {
 pub struct DocumentTranslation {
     pub title: String,
     pub content: String,
+    pub metadata: PublishedMetadata,
 }
 
 #[derive(Clone, Debug)]
 pub struct DocumentMetadata {
-    pub metadata: Value,
+    pub metadata: PublishedMetadata,
     pub inferred_language: String,
 }
 
@@ -65,11 +64,26 @@ struct ResponsesOutputTextDone {
 struct TranslationOutput {
     title: String,
     content: String,
+    metadata: PublishedMetadata,
 }
 
 #[derive(Debug, Deserialize)]
 struct MetadataOutput {
     inferred_lang: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    short_summary: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    inferred_date: String,
+    #[serde(default)]
+    key_points: Vec<String>,
+    #[serde(default)]
+    audience: String,
 }
 
 pub async fn run(
@@ -91,14 +105,14 @@ pub async fn translate_document(
     document: &DocumentDetail,
     source_language: &str,
     target_language: &str,
+    source_metadata: &PublishedMetadata,
 ) -> Result<DocumentTranslation, AiError> {
-    let instructions = format!(
-        "You are CTX's Markdown translation assistant. Translate the title and complete GitHub Flavored Markdown document from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, Mermaid diagrams, task lists, tables, HTML, and frontmatter. Do not change non-text elements or code. Use fluent, idiomatic language for a reader familiar with the subject. {} Return only a JSON object with string fields title and content.",
-        japanese_translation_rules(target_language)
-    );
+    let instructions = translation_instructions(source_language, target_language);
     let content = format!(
-        "Source language: {source_language}\nTarget language: {target_language}\n\nDocument title:\n{}\n\nDocument Markdown:\n{}",
-        document.document.title, document.revision.content
+        "Source language: {source_language}\nTarget language: {target_language}\n\nDocument title:\n{}\n\nDocument Markdown:\n{}\n\nSource editorial metadata JSON:\n{}",
+        document.document.title,
+        document.revision.content,
+        serde_json::to_string(source_metadata).map_err(|_| AiError::Response)?
     );
     let output = request_output(credentials, &instructions, &content).await?;
     translation_from_output(&output)
@@ -108,7 +122,7 @@ pub async fn extract_document_metadata(
     credentials: &AiCredentials,
     document: &DocumentDetail,
 ) -> Result<DocumentMetadata, AiError> {
-    let instructions = "You are CTX's editorial metadata assistant. Extract structured metadata from the Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), and audience (a short description). Preserve the author's title; do not generate or change it.";
+    let instructions = "You are CTX's editorial metadata assistant. Extract structured metadata from the Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences for an article list or RSS description), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), and audience (a short description). Preserve the author's title; do not generate or change it. Summary is part of this metadata extraction; do not create a separate summary artifact.";
     let content = format!(
         "Document title:\n{}\n\nDocument Markdown:\n{}",
         document.document.title, document.revision.content
@@ -170,7 +184,15 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
                 return Ok("Superseded by a newer published revision".to_owned());
             };
             database
-                .enqueue_published_translation_matrix(
+                .store_published_metadata(
+                    &request.document_id,
+                    &request.source_revision_id,
+                    &source_language,
+                    &extracted.metadata,
+                )
+                .map_err(|error| error.to_string())?;
+            database
+                .requeue_translations_missing_metadata(
                     &request.document_id,
                     &request.source_revision_id,
                 )
@@ -183,14 +205,31 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
             if document.document.source_language == "und" {
                 return Err("the source language is still being inferred".to_owned());
             }
+            let metadata = database
+                .published_source_metadata(
+                    &request.document_id,
+                    &request.source_revision_id,
+                    &document.document.source_language,
+                )
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "source metadata is still being extracted".to_owned())?;
             let translation = translate_document(
                 &credentials,
                 &document,
                 &document.document.source_language,
                 &request.target_language,
+                &metadata,
             )
             .await
             .map_err(|error| error.to_string())?;
+            if translation.metadata.is_empty()
+                || translation.metadata.inferred_lang != request.target_language
+            {
+                return Err(
+                    "the translation response did not include metadata for the requested language"
+                        .to_owned(),
+                );
+            }
             let stored = database
                 .store_published_translation(
                     &request.document_id,
@@ -198,6 +237,7 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
                     &request.target_language,
                     &translation.title,
                     &translation.content,
+                    &translation.metadata,
                 )
                 .map_err(|error| error.to_string())?;
             Ok(if stored {
@@ -213,30 +253,49 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
 fn translation_from_output(output: &str) -> Result<DocumentTranslation, AiError> {
     let translation: TranslationOutput =
         serde_json::from_str(output).map_err(|_| AiError::Response)?;
-    if translation.title.trim().is_empty() || translation.content.trim().is_empty() {
+    if translation.title.trim().is_empty()
+        || translation.content.trim().is_empty()
+        || translation.metadata.is_empty()
+    {
         return Err(AiError::Response);
     }
     Ok(DocumentTranslation {
         title: translation.title,
         content: translation.content,
+        metadata: translation.metadata,
     })
 }
 
 fn metadata_from_output(output: &str) -> Result<DocumentMetadata, AiError> {
-    let metadata: Value = serde_json::from_str(output).map_err(|_| AiError::Response)?;
-    let inferred_language = serde_json::from_value::<MetadataOutput>(metadata.clone())
-        .map_err(|_| AiError::Response)?
-        .inferred_lang;
+    let output: MetadataOutput = serde_json::from_str(output).map_err(|_| AiError::Response)?;
+    let inferred_language = output.inferred_lang;
     let inferred_language = normalize_language_tag(&inferred_language)
         .filter(|language| language != "und")
         .ok_or(AiError::Response)?;
-    if !metadata.is_object() {
+    let metadata = PublishedMetadata {
+        description: output.description,
+        summary: output.summary,
+        short_summary: output.short_summary,
+        tags: output.tags,
+        inferred_date: output.inferred_date,
+        inferred_lang: inferred_language.clone(),
+        key_points: output.key_points,
+        audience: output.audience,
+    };
+    if metadata.is_empty() {
         return Err(AiError::Response);
     }
     Ok(DocumentMetadata {
         metadata,
         inferred_language,
     })
+}
+
+fn translation_instructions(source_language: &str, target_language: &str) -> String {
+    format!(
+        "You are CTX's Markdown translation assistant. Translate the title, complete GitHub Flavored Markdown document, and editorial metadata from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, task lists, tables, HTML, and frontmatter. For Mermaid fenced code blocks, preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators; translate only reader-facing labels, titles, and subgraph labels. Do not leave Mermaid labels in the source language. Do not change non-text elements or code. Translate description, summary, short_summary, tags, key_points, and audience in metadata; preserve inferred_date and set metadata.inferred_lang to {target_language}. Use fluent, idiomatic language for a reader familiar with the subject. {} Return only a JSON object with string fields title and content and an object field metadata.",
+        japanese_translation_rules(target_language)
+    )
 }
 
 fn japanese_translation_rules(target_language: &str) -> &'static str {
@@ -293,8 +352,7 @@ fn output_text_from_sse(sse: &str) -> Option<String> {
 
 fn system_prompt(task: &AiTask) -> String {
     match task {
-        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with title, description, tags, and category. Preserve the author's factual claims and do not invent sources.".to_owned(),
-        AiTask::Summary => "You are CTX's editorial summary assistant. Write a concise Markdown summary with the document's actual argument, key points, and unresolved questions. Do not invent facts or citations.".to_owned(),
+        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, and audience. Preserve the author's factual claims and do not invent sources.".to_owned(),
         AiTask::DetectLanguage => "You are CTX's language detector. Read the document title and Markdown, then return only its original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES. Do not add explanation, punctuation, or Markdown. If the language cannot be determined, return und.".to_owned(),
     }
 }
@@ -305,6 +363,7 @@ mod tests {
 
     use super::{
         metadata_from_output, output_text_from_sse, request_body, translation_from_output,
+        translation_instructions,
     };
 
     #[test]
@@ -353,13 +412,26 @@ mod tests {
     #[test]
     fn requires_a_complete_structured_translation() {
         let translation = translation_from_output(
-            r##"{"title":"Translated title","content":"# Translated\n\n- [x] Done"}"##,
+            r##"{"title":"Translated title","content":"# Translated\n\n- [x] Done","metadata":{"description":"Translated description","summary":"Translated summary","short_summary":"Translated short summary","tags":["CTX"],"inferred_date":"","inferred_lang":"en-US","key_points":["Done"],"audience":"Readers"}}"##,
         )
         .unwrap();
         assert_eq!(translation.title, "Translated title");
         assert_eq!(translation.content, "# Translated\n\n- [x] Done");
         assert!(translation_from_output(r#"{"title":"Only a title","content":""}"#).is_err());
+        assert!(translation_from_output(r##"{"title":"No metadata","content":"# Content","metadata":{"inferred_lang":"en-US"}}"##).is_err());
         assert!(translation_from_output("not JSON").is_err());
+    }
+
+    #[test]
+    fn keeps_mermaid_syntax_and_translates_reader_facing_labels() {
+        let instructions = translation_instructions("en-US", "ja-JP");
+        assert!(instructions.contains("preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators"));
+        assert!(
+            instructions
+                .contains("translate only reader-facing labels, titles, and subgraph labels")
+        );
+        assert!(instructions.contains("Do not leave Mermaid labels in the source language"));
+        assert!(instructions.contains("です・ます"));
     }
 
     #[test]
@@ -369,6 +441,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(metadata.inferred_language, "ja-JP");
+        assert!(metadata_from_output(r#"{"inferred_lang":"ja-JP"}"#).is_err());
         assert!(metadata_from_output(r#"{"description":"No language"}"#).is_err());
         assert!(metadata_from_output(r#"{"inferred_lang":"Japanese"}"#).is_err());
     }

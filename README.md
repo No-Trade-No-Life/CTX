@@ -18,11 +18,12 @@ public square for anyone to read.
   The server encrypts the configured API key with a host-local AES-GCM key; it
   is never returned to the browser.
 - Publishing saves the original Markdown immediately, then queues auditable AI
-  metadata extraction and Markdown-preserving translations against that fixed
-  revision. Translations retain Markdown structure, including links, code,
-  GFM, and Mermaid. The public reader follows the UI language (`zh-CN`,
-  `en-US`, `ja-JP`, or `es-ES`) and shows the original with a background-work
-  notice until a requested translation is ready.
+  metadata extraction against that fixed revision. When a reader opens an
+  unavailable UI language (`zh-CN`, `en-US`, `ja-JP`, or `es-ES`), CTX queues
+  one Markdown-preserving translation together with localized editorial
+  metadata. Translations retain Markdown structure, including links, code,
+  GFM, and Mermaid; the reader shows the original with a background-work
+  notice until that localized article is ready.
 - Root administrators can inspect queued, running, successful, and failed
   metadata/translation requests at **Administration → AI request audit**.
 

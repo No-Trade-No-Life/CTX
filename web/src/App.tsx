@@ -45,8 +45,8 @@ import type {
   AiRun,
   Document,
   DocumentDetail,
-  LanguagePreferences,
   Me,
+  PublishedMetadata,
   PublicDocument,
   PublicDocumentDetail,
 } from "./lib/types"
@@ -347,7 +347,6 @@ function DocumentListPage({ token }: { token: string }) {
           {t("newDocument")}
         </Button>
       </section>
-      <LanguagePreferencesPanel token={token} />
       {items.length === 0 ? (
         <Empty className="min-h-80">
           <EmptyHeader>
@@ -382,88 +381,6 @@ function DocumentListPage({ token }: { token: string }) {
         </section>
       )}
     </main>
-  )
-}
-
-function LanguagePreferencesPanel({ token }: { token: string }) {
-  const queryClient = useQueryClient()
-  const { t } = useI18n()
-  const preferences = useQuery({
-    queryKey: ["language-preferences", token],
-    queryFn: () =>
-      request<LanguagePreferences>("/api/v1/me/language-preferences", token),
-  })
-  const [value, setValue] = useState<string>()
-  const update = useMutation({
-    mutationFn: () =>
-      request<LanguagePreferences>("/api/v1/me/language-preferences", token, {
-        method: "PUT",
-        body: JSON.stringify({
-          languages: (value ?? preferences.data?.languages.join(", ") ?? "")
-            .split(",")
-            .map((language) => language.trim())
-            .filter(Boolean),
-        }),
-      }),
-    onSuccess: (result) => {
-      queryClient.setQueryData(["language-preferences", token], result)
-      setValue(result.languages.join(", "))
-      toast.success(t("languagePreferencesSaved"))
-    },
-    onError: showError,
-  })
-
-  if (preferences.error)
-    return (
-      <Alert variant="destructive" className="max-w-2xl">
-        <AlertTitle>{t("requestFailed")}</AlertTitle>
-        <AlertDescription>{preferences.error.message}</AlertDescription>
-      </Alert>
-    )
-
-  return (
-    <section
-      aria-labelledby="publication-languages-title"
-      className="max-w-2xl rounded-md border bg-muted/30 p-4"
-    >
-      <div>
-        <h2 id="publication-languages-title" className="text-sm font-medium">
-          {t("languageMatrix")}
-        </h2>
-        <p className="mt-1 text-sm leading-6 text-muted-foreground">
-          {t("languageMatrixDescription")}
-        </p>
-      </div>
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
-        <Field className="min-w-0 flex-1">
-          <FieldLabel htmlFor="publication-languages" className="sr-only">
-            {t("languageMatrix")}
-          </FieldLabel>
-          <Input
-            id="publication-languages"
-            value={value ?? preferences.data?.languages.join(", ") ?? ""}
-            placeholder={t("languageMatrixPlaceholder")}
-            disabled={preferences.isPending || update.isPending}
-            onChange={(event) => setValue(event.target.value)}
-          />
-        </Field>
-        <Button
-          className="sm:shrink-0"
-          disabled={preferences.isPending || update.isPending}
-          onClick={() => update.mutate()}
-        >
-          {update.isPending ? (
-            <LoaderCircleIcon
-              className="animate-spin"
-              data-icon="inline-start"
-            />
-          ) : (
-            <SaveIcon data-icon="inline-start" />
-          )}
-          {t("saveLanguagePreferences")}
-        </Button>
-      </div>
-    </section>
   )
 }
 
@@ -579,6 +496,11 @@ function ExistingDocumentPage({ token }: { token: string }) {
     queryFn: () =>
       request<DocumentDetail>(`/api/v1/documents/${documentId}`, token),
     enabled: Boolean(documentId),
+    refetchInterval: (query) =>
+      query.state.data?.document.status === "published" &&
+      !hasEditorialMetadata(query.state.data.document.metadata)
+        ? 2_000
+        : false,
   })
 
   if (document.isPending) return <EditorSkeleton />
@@ -741,6 +663,11 @@ function ExistingDocumentEditor({
         />
       </section>
       <aside className="min-w-0 xl:pt-14">
+        <EditorialMetadata
+          metadata={publishedMetadata(detail.document.metadata)}
+          pending={isPublished && !hasEditorialMetadata(detail.document.metadata)}
+          variant="private"
+        />
         <AiPanel
           token={token}
           detail={detail}
@@ -946,7 +873,6 @@ function AiPanel({
               </Alert>
             ) : null}
             {action("metadata", t("extractMetadata"))}
-            {action("summary", t("summarizeDocument"))}
             {action("detect_language", t("detectSourceLanguage"))}
           </div>
         </TabsContent>
@@ -995,12 +921,132 @@ function AiPanel({
   )
 }
 
+function publishedMetadata(value: Record<string, unknown>): PublishedMetadata {
+  const strings = (key: string) =>
+    typeof value[key] === "string" ? value[key] : ""
+  const textList = (key: string) =>
+    Array.isArray(value[key])
+      ? value[key].filter((item): item is string => typeof item === "string")
+      : []
+  return {
+    description: strings("description"),
+    summary: strings("summary"),
+    short_summary: strings("short_summary"),
+    tags: textList("tags"),
+    inferred_date: strings("inferred_date"),
+    inferred_lang: strings("inferred_lang"),
+    key_points: textList("key_points"),
+    audience: strings("audience"),
+  }
+}
+
+function hasEditorialMetadata(value: Record<string, unknown>) {
+  const metadata = publishedMetadata(value)
+  return Boolean(
+    metadata.description ||
+      metadata.summary ||
+      metadata.short_summary ||
+      metadata.tags.length ||
+      metadata.key_points.length ||
+      metadata.audience
+  )
+}
+
+function EditorialMetadata({
+  metadata,
+  pending = false,
+  variant = "detail",
+}: {
+  metadata: PublishedMetadata
+  pending?: boolean
+  variant?: "list" | "detail" | "private"
+}) {
+  const { t } = useI18n()
+  const hasMetadata = Boolean(
+    metadata.description ||
+      metadata.summary ||
+      metadata.short_summary ||
+      metadata.tags.length ||
+      metadata.key_points.length ||
+      metadata.audience
+  )
+  if (!hasMetadata)
+    return pending ? (
+      <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+        <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />
+        {t("metadataPreparing")}
+      </p>
+    ) : null
+
+  if (variant === "list")
+    return (
+      <div className="mt-3 space-y-2">
+        <p className="line-clamp-2 text-sm leading-6 text-muted-foreground">
+          {metadata.short_summary || metadata.description}
+        </p>
+        {metadata.tags.length ? (
+          <div className="flex flex-wrap gap-1.5" aria-label={t("metadataTags")}>
+            {metadata.tags.map((tag) => (
+              <Badge key={tag} variant="secondary" className="font-normal">
+                {tag}
+              </Badge>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    )
+
+  return (
+    <section aria-label={t("metadata")} className="mt-6 border-t pt-5">
+      <h2 className="text-sm font-medium">{t("metadata")}</h2>
+      {metadata.description ? (
+        <p className="mt-2 text-base leading-7 text-foreground/90">
+          {metadata.description}
+        </p>
+      ) : null}
+      {metadata.summary && metadata.summary !== metadata.description ? (
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+          {metadata.summary}
+        </p>
+      ) : null}
+      {metadata.tags.length ? (
+        <div className="mt-4 flex flex-wrap gap-1.5" aria-label={t("metadataTags")}>
+          {metadata.tags.map((tag) => (
+            <Badge key={tag} variant="secondary" className="font-normal">
+              {tag}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      {metadata.key_points.length ? (
+        <div className="mt-5">
+          <h3 className="text-sm font-medium">{t("metadataKeyPoints")}</h3>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-6 text-muted-foreground">
+            {metadata.key_points.map((point) => (
+              <li key={point}>{point}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {metadata.audience ? (
+        <p className="mt-5 text-sm leading-6 text-muted-foreground">
+          <span className="font-medium text-foreground">{t("metadataAudience")}: </span>
+          {metadata.audience}
+        </p>
+      ) : null}
+    </section>
+  )
+}
+
 function SquarePage() {
   const navigate = useNavigate()
   const { locale, t } = useI18n()
   const documents = useQuery({
-    queryKey: ["public-documents"],
-    queryFn: () => request<PublicDocument[]>("/api/public/documents"),
+    queryKey: ["public-documents", locale],
+    queryFn: () =>
+      request<PublicDocument[]>(
+        `/api/public/documents?language=${encodeURIComponent(locale)}`
+      ),
   })
 
   return (
@@ -1102,6 +1148,11 @@ function PublicDocumentRow({
         <div className="mt-2">
           <LinkitUserInfo userId={document.owner_id} compact />
         </div>
+        <EditorialMetadata
+          metadata={document.metadata}
+          pending={Boolean(document.metadata_status)}
+          variant="list"
+        />
       </div>
       <Button variant="ghost" size="sm" onClick={onOpen}>
         {t("readArticle")}
@@ -1122,6 +1173,10 @@ function PublicDocumentPage() {
         `/api/public/documents/${documentId}?language=${encodeURIComponent(locale)}`
       ),
     enabled: Boolean(documentId),
+    refetchInterval: (query) =>
+      query.state.data?.is_translation_fallback || query.state.data?.metadata_status
+        ? 2_000
+        : false,
   })
 
   if (document.isPending) return <LoadingPage />
@@ -1163,6 +1218,10 @@ function PublicDocumentPage() {
             <LinkitUserInfo userId={document.data.owner_id} compact />
             <Badge variant="outline">{document.data.language}</Badge>
           </div>
+          <EditorialMetadata
+            metadata={document.data.metadata}
+            pending={Boolean(document.data.metadata_status)}
+          />
         </header>
         {document.data.is_translation_fallback ? (
           <Alert className="mt-6 max-w-[72ch]">
