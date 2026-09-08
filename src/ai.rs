@@ -39,20 +39,7 @@ pub enum AiError {
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponsesResponse {
-    output: Vec<ResponseOutput>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResponseOutput {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    content: Vec<ResponseContent>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResponseContent {
+struct ResponsesOutputTextDone {
     #[serde(rename = "type")]
     kind: String,
     text: Option<String>,
@@ -84,8 +71,7 @@ pub async fn run(
     if !response.status().is_success() {
         return Err(AiError::Rejected(response.text().await?));
     }
-    let response: ResponsesResponse = response.json().await?;
-    let output = output_text(response).ok_or(AiError::Response)?;
+    let output = output_text_from_sse(&response.text().await?).ok_or(AiError::Response)?;
     let proposed_content = matches!(task, AiTask::Translate).then(|| output.clone());
     Ok(AiOutput {
         output,
@@ -97,6 +83,7 @@ fn request_body(model: &str, instructions: &str, input: &str) -> serde_json::Val
     json!({
         "model": model,
         "instructions": instructions,
+        "stream": true,
         "input": [{
             "role": "user",
             "content": [{
@@ -107,14 +94,13 @@ fn request_body(model: &str, instructions: &str, input: &str) -> serde_json::Val
     })
 }
 
-fn output_text(response: ResponsesResponse) -> Option<String> {
-    let output = response
-        .output
-        .into_iter()
-        .filter(|item| item.kind == "message")
-        .flat_map(|item| item.content)
-        .filter(|content| content.kind == "output_text")
-        .filter_map(|content| content.text)
+fn output_text_from_sse(sse: &str) -> Option<String> {
+    let output = sse
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|data| serde_json::from_str::<ResponsesOutputTextDone>(data.trim()).ok())
+        .filter(|event| event.kind == "response.output_text.done")
+        .filter_map(|event| event.text)
         .collect::<String>();
     (!output.trim().is_empty()).then_some(output)
 }
@@ -131,7 +117,7 @@ fn system_prompt(task: &AiTask, target_language: Option<&str>) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{ResponsesResponse, output_text, request_body};
+    use super::{output_text_from_sse, request_body};
 
     #[test]
     fn sends_responses_input_as_message_items() {
@@ -140,6 +126,7 @@ mod tests {
             json!({
                 "model": "gpt-5.6-luna",
                 "instructions": "follow the context",
+                "stream": true,
                 "input": [{
                     "role": "user",
                     "content": [{
@@ -152,32 +139,26 @@ mod tests {
     }
 
     #[test]
-    fn extracts_output_text_from_response_messages_in_order() {
-        let response = serde_json::from_value::<ResponsesResponse>(json!({
-            "output": [
-                {"type": "reasoning"},
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "output_text", "text": "first "},
-                        {"type": "refusal", "refusal": "ignored"},
-                        {"type": "output_text", "text": "second"}
-                    ]
-                }
-            ]
-        }))
-        .unwrap();
+    fn extracts_output_text_done_events_in_order() {
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ignored\"}\n\n",
+            "event: response.output_text.done\n",
+            "data: {\"type\":\"response.output_text.done\",\"text\":\"first \"}\n\n",
+            "data: {\"type\":\"response.output_text.done\",\"text\":\"second\"}\n\n",
+            "data: {\"type\":\"response.completed\"}\n\n"
+        );
 
-        assert_eq!(output_text(response).as_deref(), Some("first second"));
+        assert_eq!(output_text_from_sse(sse).as_deref(), Some("first second"));
     }
 
     #[test]
-    fn rejects_response_without_visible_output_text() {
-        let response = serde_json::from_value::<ResponsesResponse>(json!({
-            "output": [{"type": "reasoning"}]
-        }))
-        .unwrap();
+    fn rejects_sse_without_output_text_done_events() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+            "data: {\"type\":\"response.completed\"}\n\n"
+        );
 
-        assert_eq!(output_text(response), None);
+        assert_eq!(output_text_from_sse(sse), None);
     }
 }
