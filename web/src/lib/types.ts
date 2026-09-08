@@ -47,6 +47,9 @@ export type PublicDocumentDetail = {
   source_language: string
   language: string
   available_languages: string[]
+  requested_language: string | null
+  translation_status: "queued" | "running" | "succeeded" | "failed" | null
+  is_translation_fallback: boolean
   published_at: number
 }
 
@@ -68,4 +71,19 @@ export type AiRun = {
   output: string
   proposed_content: string | null
   created_at: number
+}
+
+export type AiRequest = {
+  id: string
+  document_id: string
+  document_title: string
+  source_revision_id: string
+  task: "metadata" | "translate"
+  target_language: string
+  status: "queued" | "running" | "succeeded" | "failed"
+  result_summary: string | null
+  error: string | null
+  created_at: number
+  started_at: number | null
+  completed_at: number | null
 }

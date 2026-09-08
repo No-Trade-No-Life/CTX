@@ -8,7 +8,7 @@ import {
   type SetStateAction,
 } from "react"
 
-export type Locale = "zh" | "en"
+export type Locale = "zh-CN" | "en-US" | "ja-JP" | "es-ES"
 
 const storageKey = "ctx.locale"
 
@@ -20,14 +20,18 @@ const englishCopy = defineCopy({
   language: "Language",
   languageChinese: "Chinese",
   languageEnglish: "English",
+  languageJapanese: "Japanese",
+  languageSpanish: "Spanish",
   navigationDocuments: "My documents",
   navigationSquare: "Square",
   navigationAdministration: "Administration",
+  navigationAiRequests: "AI request audit",
   root: "Root",
   refreshDocuments: "Refresh documents",
   pageTitleDocuments: "My documents",
   pageTitleEditor: "Document editor",
   pageTitleAdministration: "Administration",
+  pageTitleAiRequests: "AI request audit",
   documentsTitle: "Your documents",
   documentsDescription:
     "Write in Markdown, keep every revision, and choose what to share.",
@@ -46,8 +50,8 @@ const englishCopy = defineCopy({
   sourceLanguage: "Original language",
   sourceLanguagePlaceholder: "For example, zh-CN",
   sourceLanguageDescription:
-    "Use a BCP 47 tag. Leave it as und to detect the source language when publishing.",
-  sourceLanguageAuto: "Detect on publish",
+    "Use a BCP 47 tag. Leave it as und and AI will infer the original language after publishing.",
+  sourceLanguageAuto: "Detect after publishing",
   markdown: "Markdown",
   markdownDescription:
     "Markdown is the source. Each save writes an immutable revision.",
@@ -56,7 +60,8 @@ const englishCopy = defineCopy({
   save: "Save",
   publish: "Publish",
   savedNewRevision: "Saved as a new revision",
-  publishedCurrentRevision: "Published current revision",
+  publishedCurrentRevision:
+    "Published the original; AI work is continuing in the background",
   documentCreated: "Document created",
   revision: "Revision",
   viewPublicArticle: "View public article",
@@ -82,11 +87,14 @@ const englishCopy = defineCopy({
     "Run a task to inspect an auditable AI result without changing your Markdown.",
   languageMatrix: "Publication languages",
   languageMatrixDescription:
-    "Published documents are automatically translated into these languages. The original is always retained.",
+    "Publishing queues Markdown translations for these languages. The original is always retained.",
   languageMatrixPlaceholder: "zh-CN, en-US, ja-JP, es-ES",
   saveLanguagePreferences: "Save publication languages",
   languagePreferencesSaved: "Publication languages saved",
   articleLanguage: "Article language",
+  translationInProgressTitle: "Translation is being prepared",
+  translationInProgress:
+    "You are reading the original while the requested language is translated in the background.",
   squareTitle: "The square",
   squareDescription: "Published Markdown from everyone writing with CTX.",
   squareEmptyTitle: "Nothing has been published yet",
@@ -116,6 +124,24 @@ const englishCopy = defineCopy({
   apiKeyDescription:
     "Only root can update this secret. CTX will never echo it back.",
   saveAiConfiguration: "Save AI configuration",
+  aiRequestsTitle: "AI request audit",
+  aiRequestsDescription:
+    "Every automatic metadata extraction and Markdown translation is recorded here.",
+  aiRequestDocument: "Document",
+  aiRequestTask: "Task",
+  aiRequestTargetLanguage: "Target language",
+  aiRequestStatus: "Status",
+  aiRequestCreated: "Created",
+  aiRequestCompleted: "Completed",
+  aiRequestResult: "Result",
+  aiRequestError: "Error",
+  aiRequestsEmpty: "No automatic AI requests have been recorded.",
+  aiTaskMetadata: "Metadata",
+  aiTaskTranslate: "Translation",
+  aiStatusQueued: "Queued",
+  aiStatusRunning: "Running",
+  aiStatusSucceeded: "Succeeded",
+  aiStatusFailed: "Failed",
   requestFailed: "CTX could not complete this request",
 })
 
@@ -127,14 +153,18 @@ const chineseCopy: Copy = {
   language: "语言",
   languageChinese: "中文",
   languageEnglish: "英文",
+  languageJapanese: "日文",
+  languageSpanish: "西班牙文",
   navigationDocuments: "我的文档",
   navigationSquare: "广场",
   navigationAdministration: "管理",
+  navigationAiRequests: "AI 请求审计",
   root: "根管理员",
   refreshDocuments: "刷新文档",
   pageTitleDocuments: "我的文档",
   pageTitleEditor: "文档编辑器",
   pageTitleAdministration: "管理",
+  pageTitleAiRequests: "AI 请求审计",
   documentsTitle: "你的文档",
   documentsDescription: "用 Markdown 写作，保留每次修订，并选择哪些内容公开。",
   newDocument: "新建文档",
@@ -152,8 +182,8 @@ const chineseCopy: Copy = {
   sourceLanguage: "原文语言",
   sourceLanguagePlaceholder: "例如 zh-CN",
   sourceLanguageDescription:
-    "使用 BCP 47 语言标签。保留 und 会在发布时自动识别原文语言。",
-  sourceLanguageAuto: "发布时自动识别",
+    "使用 BCP 47 语言标签。保留 und，发布后由 AI 推断原文语言。",
+  sourceLanguageAuto: "发布后自动识别",
   markdown: "Markdown",
   markdownDescription:
     "Markdown 是事实来源。每次保存都会写入一个不可变修订版本。",
@@ -162,7 +192,7 @@ const chineseCopy: Copy = {
   save: "保存",
   publish: "发布",
   savedNewRevision: "已保存为新的修订版本",
-  publishedCurrentRevision: "已发布当前修订版本",
+  publishedCurrentRevision: "原文已发布；AI 任务正在后台继续执行",
   documentCreated: "文档已创建",
   revision: "修订版本",
   viewPublicArticle: "查看公开文章",
@@ -185,11 +215,14 @@ const chineseCopy: Copy = {
   metadataSaved: "元数据已保存为新的修订版本",
   aiOutputEmpty: "运行任务以查看可审查的 AI 结果，Markdown 不会被自动改写。",
   languageMatrix: "发布语言矩阵",
-  languageMatrixDescription: "发布时会自动派生这些语言的译文，原文始终保留。",
+  languageMatrixDescription:
+    "发布会为这些语言排队生成 Markdown 译文，原文始终保留。",
   languageMatrixPlaceholder: "zh-CN, en-US, ja-JP, es-ES",
   saveLanguagePreferences: "保存发布语言",
   languagePreferencesSaved: "发布语言已保存",
   articleLanguage: "文章语言",
+  translationInProgressTitle: "译文正在准备",
+  translationInProgress: "当前显示原文；所选语言的译文正在后台生成。",
   squareTitle: "广场",
   squareDescription: "所有使用 CTX 写作者已经发布的 Markdown 文章。",
   squareEmptyTitle: "还没有文章发布",
@@ -216,18 +249,305 @@ const chineseCopy: Copy = {
   apiKeyPlaceholder: "留空即可保留已加密的密钥",
   apiKeyDescription: "只有根管理员可以更新此密钥。CTX 不会将其返回。",
   saveAiConfiguration: "保存 AI 配置",
+  aiRequestsTitle: "AI 请求审计",
+  aiRequestsDescription:
+    "每次自动提取元数据和翻译 Markdown 的请求都会记录在这里。",
+  aiRequestDocument: "文档",
+  aiRequestTask: "任务",
+  aiRequestTargetLanguage: "目标语言",
+  aiRequestStatus: "状态",
+  aiRequestCreated: "创建时间",
+  aiRequestCompleted: "完成时间",
+  aiRequestResult: "结果",
+  aiRequestError: "错误",
+  aiRequestsEmpty: "尚未记录自动 AI 请求。",
+  aiTaskMetadata: "元信息提取",
+  aiTaskTranslate: "翻译",
+  aiStatusQueued: "排队中",
+  aiStatusRunning: "执行中",
+  aiStatusSucceeded: "成功",
+  aiStatusFailed: "失败",
   requestFailed: "CTX 无法完成此请求",
 }
 
+const japaneseCopy: Copy = {
+  ...englishCopy,
+  language: "言語",
+  languageChinese: "中国語",
+  languageEnglish: "英語",
+  languageJapanese: "日本語",
+  languageSpanish: "スペイン語",
+  navigationDocuments: "自分の文書",
+  navigationSquare: "広場",
+  navigationAdministration: "管理",
+  navigationAiRequests: "AI リクエスト監査",
+  root: "ルート管理者",
+  refreshDocuments: "文書を更新",
+  pageTitleDocuments: "自分の文書",
+  pageTitleEditor: "文書エディター",
+  pageTitleAdministration: "管理",
+  pageTitleAiRequests: "AI リクエスト監査",
+  documentsTitle: "あなたの文書",
+  documentsDescription:
+    "Markdown で書き、すべてのリビジョンを残し、共有する内容を選べます。",
+  newDocument: "新しい文書",
+  emptyDocumentsTitle: "最初の一篇を書く",
+  emptyDocumentsDescription:
+    "Markdown 文書から始めましょう。保存するとリビジョンが作成され、公開すると広場で読めるようになります。",
+  createDocument: "文書を作成",
+  openDocument: "文書を開く",
+  backToDocuments: "文書に戻る",
+  updatedOn: "更新日 {date}",
+  publishedOn: "公開日 {date}",
+  document: "文書",
+  title: "タイトル",
+  titlePlaceholder: "この文書のタイトルを入力",
+  sourceLanguage: "原文の言語",
+  sourceLanguagePlaceholder: "例: ja-JP",
+  sourceLanguageDescription:
+    "BCP 47 言語タグを使います。und のまま公開すると、AI が原文の言語を推定します。",
+  sourceLanguageAuto: "公開後に自動検出",
+  markdownDescription:
+    "Markdown が原典です。保存のたびに不変のリビジョンを作成します。",
+  draft: "下書き",
+  published: "公開済み",
+  save: "保存",
+  publish: "公開",
+  savedNewRevision: "新しいリビジョンとして保存しました",
+  publishedCurrentRevision:
+    "原文を公開しました。AI 処理はバックグラウンドで継続しています",
+  documentCreated: "文書を作成しました",
+  revision: "リビジョン",
+  viewPublicArticle: "公開記事を表示",
+  documentNotFound: "文書が見つかりません",
+  documentAi: "この文書の AI",
+  documentAiDescription:
+    "AI は現在のリビジョンだけを使用し、確認可能な結果を残します。",
+  detectSourceLanguage: "原文の言語を検出",
+  applyDetectedLanguage: "検出した言語を使用",
+  detectedSourceLanguage: "検出した原文の言語: {language}",
+  saveBeforeAiTitle: "AI を使う前に保存",
+  saveBeforeAi:
+    "AI は最新の保存済みリビジョンを使用します。先に変更を保存してください。",
+  aiActions: "操作",
+  aiOutput: "出力",
+  extractMetadata: "メタデータを抽出",
+  summarizeDocument: "文書を要約",
+  aiWorkRecorded: "AI 処理をこのリビジョンに記録しました",
+  appliedAiMetadata: "AI メタデータを適用しました",
+  applyMetadata: "メタデータを適用",
+  metadataSaved: "メタデータを新しいリビジョンとして保存しました",
+  aiOutputEmpty:
+    "Markdown を変更せずに、監査可能な AI 結果を確認するにはタスクを実行してください。",
+  languageMatrix: "公開言語マトリクス",
+  languageMatrixDescription:
+    "公開時に、これらの言語への Markdown 翻訳を待ち行列に入れます。原文は常に保持されます。",
+  saveLanguagePreferences: "公開言語を保存",
+  languagePreferencesSaved: "公開言語を保存しました",
+  articleLanguage: "記事の言語",
+  translationInProgressTitle: "翻訳を準備しています",
+  translationInProgress:
+    "要求された言語への翻訳がバックグラウンドで進行中のため、原文を表示しています。",
+  squareTitle: "広場",
+  squareDescription: "CTX で書いたすべての人の公開 Markdown です。",
+  squareEmptyTitle: "まだ公開された記事はありません",
+  squareEmptyDescription:
+    "誰かが文書を公開すると、誰でもここで読めるようになります。",
+  startWriting: "書き始める",
+  readArticle: "記事を読む",
+  backToSquare: "広場に戻る",
+  publishedDocumentNotFound: "公開文書が見つかりません",
+  rootConfigured: "ルート管理者を設定しました",
+  initializeTitle: "CTX を初期化",
+  initializeDescription:
+    "最初に認証された Auth Mini ユーザーが CTX のルート管理者になります。サインインは Auth Mini が管理します。",
+  becomeRoot: "ルート管理者になる",
+  aiConfigurationSaved: "AI 設定を保存しました",
+  administrationDescription:
+    "インスタンス固有の操作は、執筆と公開から分離されています。",
+  openAiRouting: "OpenAI ルーティング",
+  openAiRoutingDescription:
+    "CTX は OpenAI 互換の Responses API を呼び出します。API キーはこのホストで暗号化され、ブラウザーには返されません。",
+  configured: "設定済み",
+  needsKey: "キーが必要",
+  baseUrl: "ベース URL",
+  model: "モデル",
+  apiKey: "API キー",
+  apiKeyPlaceholder: "暗号化済みキーを保持する場合は空欄のままにします",
+  apiKeyDescription:
+    "この秘密情報を更新できるのはルート管理者だけです。CTX は再表示しません。",
+  saveAiConfiguration: "AI 設定を保存",
+  aiRequestsTitle: "AI リクエスト監査",
+  aiRequestsDescription:
+    "自動メタデータ抽出と Markdown 翻訳はすべてここに記録されます。",
+  aiRequestDocument: "文書",
+  aiRequestTask: "タスク",
+  aiRequestTargetLanguage: "対象言語",
+  aiRequestStatus: "状態",
+  aiRequestCreated: "作成日時",
+  aiRequestCompleted: "完了日時",
+  aiRequestResult: "結果",
+  aiRequestError: "エラー",
+  aiRequestsEmpty: "自動 AI リクエストはまだありません。",
+  aiTaskMetadata: "メタデータ抽出",
+  aiTaskTranslate: "翻訳",
+  aiStatusQueued: "待機中",
+  aiStatusRunning: "実行中",
+  aiStatusSucceeded: "成功",
+  aiStatusFailed: "失敗",
+  requestFailed: "CTX はこのリクエストを完了できませんでした",
+}
+
+const spanishCopy: Copy = {
+  ...englishCopy,
+  language: "Idioma",
+  languageChinese: "Chino",
+  languageEnglish: "Inglés",
+  languageJapanese: "Japonés",
+  languageSpanish: "Español",
+  navigationDocuments: "Mis documentos",
+  navigationSquare: "Plaza",
+  navigationAdministration: "Administración",
+  navigationAiRequests: "Auditoría de solicitudes de IA",
+  root: "Administrador raíz",
+  refreshDocuments: "Actualizar documentos",
+  pageTitleDocuments: "Mis documentos",
+  pageTitleEditor: "Editor de documentos",
+  pageTitleAdministration: "Administración",
+  pageTitleAiRequests: "Auditoría de solicitudes de IA",
+  documentsTitle: "Tus documentos",
+  documentsDescription:
+    "Escribe en Markdown, conserva cada revisión y decide qué compartir.",
+  newDocument: "Nuevo documento",
+  emptyDocumentsTitle: "Escribe el primero",
+  emptyDocumentsDescription:
+    "Empieza con un documento Markdown. Guardar crea una revisión; publicar lo hace legible en la plaza.",
+  createDocument: "Crear documento",
+  openDocument: "Abrir documento",
+  backToDocuments: "Volver a documentos",
+  updatedOn: "Actualizado {date}",
+  publishedOn: "Publicado {date}",
+  document: "Documento",
+  title: "Título",
+  titlePlaceholder: "Pon un título a este documento",
+  sourceLanguage: "Idioma original",
+  sourceLanguagePlaceholder: "Por ejemplo, es-ES",
+  sourceLanguageDescription:
+    "Usa una etiqueta BCP 47. Si dejas und, la IA inferirá el idioma original después de publicar.",
+  sourceLanguageAuto: "Detectar después de publicar",
+  markdownDescription:
+    "Markdown es la fuente. Cada guardado escribe una revisión inmutable.",
+  draft: "Borrador",
+  published: "Publicado",
+  save: "Guardar",
+  publish: "Publicar",
+  savedNewRevision: "Guardado como una nueva revisión",
+  publishedCurrentRevision:
+    "El original se publicó; el trabajo de IA continúa en segundo plano",
+  documentCreated: "Documento creado",
+  revision: "Revisión",
+  viewPublicArticle: "Ver artículo público",
+  documentNotFound: "Documento no encontrado",
+  documentAi: "IA para este documento",
+  documentAiDescription:
+    "La IA trabaja con la revisión actual y siempre deja un resultado revisable.",
+  detectSourceLanguage: "Detectar idioma original",
+  applyDetectedLanguage: "Usar idioma detectado",
+  detectedSourceLanguage: "Idioma original detectado: {language}",
+  saveBeforeAiTitle: "Guarda antes de usar IA",
+  saveBeforeAi:
+    "La IA usa la última revisión guardada. Guarda tus cambios antes de iniciar una tarea de IA.",
+  aiActions: "Acciones",
+  aiOutput: "Resultado",
+  extractMetadata: "Extraer metadatos",
+  summarizeDocument: "Resumir documento",
+  aiWorkRecorded: "El trabajo de IA se registró con esta revisión",
+  appliedAiMetadata: "Metadatos de IA aplicados",
+  applyMetadata: "Aplicar metadatos",
+  metadataSaved: "Metadatos guardados como una nueva revisión",
+  aiOutputEmpty:
+    "Ejecuta una tarea para revisar un resultado de IA auditable sin cambiar tu Markdown.",
+  languageMatrix: "Matriz de idiomas de publicación",
+  languageMatrixDescription:
+    "Al publicar se encolan traducciones Markdown para estos idiomas. El original siempre se conserva.",
+  saveLanguagePreferences: "Guardar idiomas de publicación",
+  languagePreferencesSaved: "Idiomas de publicación guardados",
+  articleLanguage: "Idioma del artículo",
+  translationInProgressTitle: "La traducción se está preparando",
+  translationInProgress:
+    "Estás leyendo el original mientras el idioma solicitado se traduce en segundo plano.",
+  squareTitle: "La plaza",
+  squareDescription:
+    "Markdown publicado por todas las personas que escriben con CTX.",
+  squareEmptyTitle: "Aún no se ha publicado nada",
+  squareEmptyDescription:
+    "Cuando alguien publique un documento, aparecerá aquí para que todos lo lean.",
+  startWriting: "Empezar a escribir",
+  readArticle: "Leer artículo",
+  backToSquare: "Volver a la plaza",
+  publishedDocumentNotFound: "Documento publicado no encontrado",
+  rootConfigured: "Usuario raíz configurado",
+  initializeTitle: "Inicializar CTX",
+  initializeDescription:
+    "El primer usuario autenticado de Auth Mini se convierte en administrador raíz de CTX. Auth Mini sigue siendo responsable del inicio de sesión.",
+  becomeRoot: "Convertirme en administrador raíz",
+  aiConfigurationSaved: "Configuración de IA guardada",
+  administrationDescription:
+    "Los controles exclusivos de la instancia permanecen separados de la escritura y la publicación.",
+  openAiRouting: "Enrutamiento de OpenAI",
+  openAiRoutingDescription:
+    "CTX llama a una API Responses compatible con OpenAI. La clave de API se cifra en este host y nunca se devuelve al navegador.",
+  configured: "configurado",
+  needsKey: "requiere clave",
+  baseUrl: "URL base",
+  model: "Modelo",
+  apiKey: "Clave de API",
+  apiKeyPlaceholder: "Déjalo vacío para conservar la clave cifrada",
+  apiKeyDescription:
+    "Solo la raíz puede actualizar este secreto. CTX nunca lo mostrará de nuevo.",
+  saveAiConfiguration: "Guardar configuración de IA",
+  aiRequestsTitle: "Auditoría de solicitudes de IA",
+  aiRequestsDescription:
+    "Cada extracción automática de metadatos y traducción Markdown se registra aquí.",
+  aiRequestDocument: "Documento",
+  aiRequestTask: "Tarea",
+  aiRequestTargetLanguage: "Idioma de destino",
+  aiRequestStatus: "Estado",
+  aiRequestCreated: "Creado",
+  aiRequestCompleted: "Completado",
+  aiRequestResult: "Resultado",
+  aiRequestError: "Error",
+  aiRequestsEmpty: "No se han registrado solicitudes automáticas de IA.",
+  aiTaskMetadata: "Metadatos",
+  aiTaskTranslate: "Traducción",
+  aiStatusQueued: "En cola",
+  aiStatusRunning: "En curso",
+  aiStatusSucceeded: "Completado",
+  aiStatusFailed: "Fallido",
+  requestFailed: "CTX no pudo completar esta solicitud",
+}
+
 export const copy: Record<Locale, Copy> = {
-  zh: chineseCopy,
-  en: englishCopy,
+  "zh-CN": chineseCopy,
+  "en-US": englishCopy,
+  "ja-JP": japaneseCopy,
+  "es-ES": spanishCopy,
 }
 
 export function initialLocale(): Locale {
   const savedLocale = window.localStorage.getItem(storageKey)
-  if (savedLocale === "zh" || savedLocale === "en") return savedLocale
-  return window.navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en"
+  // COMPATIBILITY: CTX v0.1.0-7 persisted the shorter zh/en locale codes.
+  // The first visit rewrites them as canonical BCP 47 tags. Remove after all
+  // supported persisted browser state has had a release cycle to migrate.
+  if (savedLocale === "zh") return "zh-CN"
+  if (savedLocale === "en") return "en-US"
+  if (savedLocale && Object.hasOwn(copy, savedLocale))
+    return savedLocale as Locale
+  const browserLanguage = window.navigator.language.toLowerCase()
+  if (browserLanguage.startsWith("ja")) return "ja-JP"
+  if (browserLanguage.startsWith("es")) return "es-ES"
+  if (browserLanguage.startsWith("zh")) return "zh-CN"
+  return "en-US"
 }
 
 type I18n = {

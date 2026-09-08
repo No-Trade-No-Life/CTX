@@ -34,7 +34,6 @@ import {
   useLocation,
   useNavigate,
   useParams,
-  useSearchParams,
 } from "react-router-dom"
 import { toast } from "sonner"
 
@@ -42,6 +41,7 @@ import { request } from "./lib/api"
 import { useI18n, type Locale } from "./lib/i18n"
 import type {
   AiConfiguration,
+  AiRequest,
   AiRun,
   Document,
   DocumentDetail,
@@ -150,8 +150,10 @@ function LanguageSelect() {
       </SelectTrigger>
       <SelectContent align="end">
         <SelectGroup>
-          <SelectItem value="zh">{t("languageChinese")}</SelectItem>
-          <SelectItem value="en">{t("languageEnglish")}</SelectItem>
+          <SelectItem value="en-US">{t("languageEnglish")}</SelectItem>
+          <SelectItem value="zh-CN">{t("languageChinese")}</SelectItem>
+          <SelectItem value="ja-JP">{t("languageJapanese")}</SelectItem>
+          <SelectItem value="es-ES">{t("languageSpanish")}</SelectItem>
         </SelectGroup>
       </SelectContent>
     </Select>
@@ -232,6 +234,13 @@ function CtxShell({ token }: { token: string }) {
                     >
                       {t("navigationAdministration")}
                     </NavItem>
+                    <NavItem
+                      active={location.pathname === "/admin/ai-requests"}
+                      icon={SparklesIcon}
+                      onClick={() => navigate("/admin/ai-requests")}
+                    >
+                      {t("navigationAiRequests")}
+                    </NavItem>
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
@@ -287,6 +296,16 @@ function CtxShell({ token }: { token: string }) {
               element={
                 me.data.is_root ? (
                   <AdministrationPage token={token} />
+                ) : (
+                  <Navigate to="/documents" replace />
+                )
+              }
+            />
+            <Route
+              path="/admin/ai-requests"
+              element={
+                me.data.is_root ? (
+                  <AiRequestAuditPage token={token} />
                 ) : (
                   <Navigate to="/documents" replace />
                 )
@@ -1096,17 +1115,11 @@ function PublicDocumentPage() {
   const { documentId = "" } = useParams()
   const navigate = useNavigate()
   const { locale, t } = useI18n()
-  const [searchParams, setSearchParams] = useSearchParams()
-  const requestedLanguage = searchParams.get("language")
   const document = useQuery({
-    queryKey: ["public-document", documentId, requestedLanguage],
+    queryKey: ["public-document", documentId, locale],
     queryFn: () =>
       request<PublicDocumentDetail>(
-        `/api/public/documents/${documentId}${
-          requestedLanguage
-            ? `?language=${encodeURIComponent(requestedLanguage)}`
-            : ""
-        }`
+        `/api/public/documents/${documentId}?language=${encodeURIComponent(locale)}`
       ),
     enabled: Boolean(documentId),
   })
@@ -1148,18 +1161,16 @@ function PublicDocumentPage() {
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <LinkitUserInfo userId={document.data.owner_id} compact />
-            <ArticleLanguageSelect
-              document={document.data}
-              onLanguageChange={(language) => {
-                const next = new URLSearchParams(searchParams)
-                if (language === document.data.source_language)
-                  next.delete("language")
-                else next.set("language", language)
-                setSearchParams(next)
-              }}
-            />
+            <Badge variant="outline">{document.data.language}</Badge>
           </div>
         </header>
+        {document.data.is_translation_fallback ? (
+          <Alert className="mt-6 max-w-[72ch]">
+            <LanguagesIcon data-icon="inline-start" />
+            <AlertTitle>{t("translationInProgressTitle")}</AlertTitle>
+            <AlertDescription>{t("translationInProgress")}</AlertDescription>
+          </Alert>
+        ) : null}
         <article className="mt-10 max-w-[72ch]">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
@@ -1170,41 +1181,6 @@ function PublicDocumentPage() {
         </article>
       </div>
     </main>
-  )
-}
-
-function ArticleLanguageSelect({
-  document,
-  onLanguageChange,
-}: {
-  document: PublicDocumentDetail
-  onLanguageChange: (language: string) => void
-}) {
-  const { t } = useI18n()
-  if (document.available_languages.length < 2)
-    return <Badge variant="outline">{document.language}</Badge>
-
-  return (
-    <Select
-      value={document.language}
-      onValueChange={(language) => {
-        if (language) onLanguageChange(language)
-      }}
-    >
-      <SelectTrigger size="sm" aria-label={t("articleLanguage")}>
-        <LanguagesIcon data-icon="inline-start" />
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent align="start">
-        <SelectGroup>
-          {document.available_languages.map((language) => (
-            <SelectItem key={language} value={language}>
-              {language}
-            </SelectItem>
-          ))}
-        </SelectGroup>
-      </SelectContent>
-    </Select>
   )
 }
 
@@ -1349,6 +1325,115 @@ function AdministrationPage({ token }: { token: string }) {
           </FieldGroup>
         </CardContent>
       </Card>
+    </main>
+  )
+}
+
+function AiRequestAuditPage({ token }: { token: string }) {
+  const { locale, t } = useI18n()
+  const requests = useQuery({
+    queryKey: ["admin-ai-requests", token],
+    queryFn: () => request<AiRequest[]>("/api/v1/admin/ai/requests", token),
+  })
+
+  if (requests.isPending) return <PageSkeleton />
+  if (requests.error) return <PageError error={requests.error} />
+  const items = requests.data ?? []
+
+  return (
+    <main className="mx-auto flex w-full max-w-7xl flex-col gap-8 p-4 md:p-6">
+      <section className="max-w-2xl">
+        <h1 className="text-2xl font-semibold tracking-tight text-balance">
+          {t("aiRequestsTitle")}
+        </h1>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          {t("aiRequestsDescription")}
+        </p>
+      </section>
+      {items.length === 0 ? (
+        <Empty className="min-h-72 border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <SparklesIcon />
+            </EmptyMedia>
+            <EmptyTitle>{t("aiRequestsEmpty")}</EmptyTitle>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <div className="overflow-x-auto rounded-md border">
+          <table className="w-full min-w-[920px] text-left text-sm">
+            <thead className="bg-muted/50 text-xs text-muted-foreground">
+              <tr>
+                <th className="px-4 py-3 font-medium">
+                  {t("aiRequestDocument")}
+                </th>
+                <th className="px-4 py-3 font-medium">{t("aiRequestTask")}</th>
+                <th className="px-4 py-3 font-medium">
+                  {t("aiRequestTargetLanguage")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("aiRequestStatus")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("aiRequestCreated")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("aiRequestCompleted")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("aiRequestResult")}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id} className="border-t align-top">
+                  <td className="max-w-64 px-4 py-3">
+                    <p
+                      className="truncate font-medium"
+                      title={item.document_title}
+                    >
+                      {item.document_title}
+                    </p>
+                    <p className="mt-1 font-mono text-xs text-muted-foreground">
+                      {item.source_revision_id.slice(0, 8)}
+                    </p>
+                  </td>
+                  <td className="px-4 py-3">{aiTaskLabel(item, t)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">
+                    {item.target_language || "—"}
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge
+                      variant={
+                        item.status === "failed" ? "destructive" : "outline"
+                      }
+                    >
+                      {aiStatusLabel(item, t)}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                    {formatDate(item.created_at, locale)}
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                    {item.completed_at
+                      ? formatDate(item.completed_at, locale)
+                      : "—"}
+                  </td>
+                  <td className="max-w-96 px-4 py-3 text-muted-foreground">
+                    <p
+                      className="line-clamp-2"
+                      title={item.error ?? item.result_summary ?? ""}
+                    >
+                      {item.error ?? item.result_summary ?? "—"}
+                    </p>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </main>
   )
 }
@@ -1514,8 +1599,14 @@ const markdownComponents = {
   ),
   pre: MarkdownPre,
   a: ({ children, href }: { children?: ReactNode; href?: string }) => (
-    <a href={href} className="text-primary underline underline-offset-4">
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 text-primary underline underline-offset-4"
+    >
       {children}
+      <ExternalLinkIcon className="size-3 shrink-0" aria-hidden="true" />
     </a>
   ),
   img: ({ alt, src }: { alt?: string; src?: string }) => (
@@ -1614,8 +1705,31 @@ function showError(error: Error) {
   toast.error(error.message)
 }
 
+function aiTaskLabel(
+  request: AiRequest,
+  t: (key: "aiTaskMetadata" | "aiTaskTranslate") => string
+) {
+  return t(request.task === "metadata" ? "aiTaskMetadata" : "aiTaskTranslate")
+}
+
+function aiStatusLabel(
+  request: AiRequest,
+  t: (
+    key:
+      | "aiStatusQueued"
+      | "aiStatusRunning"
+      | "aiStatusSucceeded"
+      | "aiStatusFailed"
+  ) => string
+) {
+  if (request.status === "queued") return t("aiStatusQueued")
+  if (request.status === "running") return t("aiStatusRunning")
+  if (request.status === "succeeded") return t("aiStatusSucceeded")
+  return t("aiStatusFailed")
+}
+
 function formatDate(timestamp: number, locale: Locale) {
-  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
+  return new Intl.DateTimeFormat(locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
