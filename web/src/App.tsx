@@ -1,14 +1,15 @@
 import { useState, type ReactNode } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AuthMiniButton, useAuthMini } from "auth-mini-react-components"
+import { useAuthMini } from "auth-mini-react-components"
+import { LinkitMyInfo } from "linkit-react-components"
 import {
   BookOpenIcon,
   FileTextIcon,
   FolderPlusIcon,
   Globe2Icon,
   LayoutDashboardIcon,
+  LanguagesIcon,
   LoaderCircleIcon,
-  PanelLeftIcon,
   PlusIcon,
   SaveIcon,
   Settings2Icon,
@@ -29,6 +30,7 @@ import {
 import { toast } from "sonner"
 
 import { request } from "./lib/api"
+import { useI18n, type Locale } from "./lib/i18n"
 import type {
   AiConfiguration,
   AiRun,
@@ -88,7 +90,6 @@ import { Separator } from "@/components/ui/separator"
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -115,10 +116,6 @@ export default function App() {
   return (
     <>
       <Routes>
-        <Route
-          path="/p/:contextSlug/:documentSlug"
-          element={<PublicDocumentPage />}
-        />
         <Route path="*" element={<PrivateApp />} />
       </Routes>
       <Toaster />
@@ -126,40 +123,57 @@ export default function App() {
   )
 }
 
+export function PublicApp() {
+  return (
+    <>
+      <Routes>
+        <Route
+          path="/p/:contextSlug/:documentSlug"
+          element={<PublicDocumentPage />}
+        />
+      </Routes>
+      <Toaster />
+    </>
+  )
+}
+
+function LanguageSelect() {
+  const { locale, setLocale, t } = useI18n()
+  return (
+    <Select
+      value={locale}
+      onValueChange={(value) => setLocale(value as Locale)}
+    >
+      <SelectTrigger
+        size="sm"
+        aria-label={t("language")}
+        className="size-8 justify-center border-transparent p-0 shadow-none hover:bg-accent [&>svg:last-child]:hidden"
+      >
+        <LanguagesIcon />
+        <SelectValue className="sr-only" />
+      </SelectTrigger>
+      <SelectContent align="end">
+        <SelectGroup>
+          <SelectItem value="zh">{t("languageChinese")}</SelectItem>
+          <SelectItem value="en">{t("languageEnglish")}</SelectItem>
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  )
+}
+
 function PrivateApp() {
   const { isReady, isAuthenticated, session } = useAuthMini()
   if (!isReady) return <LoadingPage />
-  if (!isAuthenticated || !session?.accessToken) return <SignInPage />
+  if (!isAuthenticated || !session?.accessToken) return <LoadingPage />
   return <CtxShell token={session.accessToken} />
-}
-
-function SignInPage() {
-  return (
-    <main className="grid min-h-svh place-items-center p-6">
-      <Card className="w-full max-w-md">
-        <CardHeader className="gap-3">
-          <div className="grid size-10 place-items-center rounded-md bg-primary text-primary-foreground">
-            <PanelLeftIcon />
-          </div>
-          <div className="flex flex-col gap-1">
-            <CardTitle>CTX</CardTitle>
-            <CardDescription>
-              Markdown-first Context for people and AI.
-            </CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <AuthMiniButton lang="en" variant="default" />
-        </CardContent>
-      </Card>
-    </main>
-  )
 }
 
 function CtxShell({ token }: { token: string }) {
   const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
+  const { t } = useI18n()
   const me = useQuery({
     queryKey: ["me", token],
     queryFn: () => request<Me>("/api/v1/me", token),
@@ -186,7 +200,7 @@ function CtxShell({ token }: { token: string }) {
           </SidebarHeader>
           <SidebarContent>
             <SidebarGroup>
-              <SidebarGroupLabel>Workspace</SidebarGroupLabel>
+              <SidebarGroupLabel>{t("navigationWorkspace")}</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
                   <NavItem
@@ -194,20 +208,20 @@ function CtxShell({ token }: { token: string }) {
                     icon={LayoutDashboardIcon}
                     onClick={() => navigate("/")}
                   >
-                    Overview
+                    {t("navigationOverview")}
                   </NavItem>
                   <NavItem
                     active={location.pathname.startsWith("/contexts")}
                     icon={BookOpenIcon}
                     onClick={() => navigate("/")}
                   >
-                    Contexts
+                    {t("navigationContexts")}
                   </NavItem>
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
             <SidebarGroup>
-              <SidebarGroupLabel>Publishing</SidebarGroupLabel>
+              <SidebarGroupLabel>{t("navigationPublishing")}</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
                   <NavItem
@@ -215,14 +229,14 @@ function CtxShell({ token }: { token: string }) {
                     icon={FileTextIcon}
                     onClick={() => navigate("/")}
                   >
-                    Docs &amp; blog
+                    {t("navigationDocsBlog")}
                   </NavItem>
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
             {me.data.is_root ? (
               <SidebarGroup>
-                <SidebarGroupLabel>System</SidebarGroupLabel>
+                <SidebarGroupLabel>{t("navigationSystem")}</SidebarGroupLabel>
                 <SidebarGroupContent>
                   <SidebarMenu>
                     <NavItem
@@ -230,16 +244,13 @@ function CtxShell({ token }: { token: string }) {
                       icon={Settings2Icon}
                       onClick={() => navigate("/admin")}
                     >
-                      Administration
+                      {t("navigationAdministration")}
                     </NavItem>
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
             ) : null}
           </SidebarContent>
-          <SidebarFooter className="p-3">
-            <AuthMiniButton lang="en" variant="ghost" size="sm" />
-          </SidebarFooter>
         </Sidebar>
         <SidebarInset>
           <header className="sticky top-0 z-10 flex h-14 items-center gap-3 border-b bg-background px-4">
@@ -247,15 +258,17 @@ function CtxShell({ token }: { token: string }) {
             <Separator orientation="vertical" className="h-5" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium">
-                {pageTitle(location.pathname)}
+                {pageTitle(location.pathname, t)}
               </p>
             </div>
             {me.data.is_root ? (
-              <Badge variant="outline">
+              <Badge variant="outline" className="hidden sm:inline-flex">
                 <ShieldCheckIcon data-icon="inline-start" />
-                Root
+                {t("root")}
               </Badge>
             ) : null}
+            <LanguageSelect />
+            <LinkitMyInfo />
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -263,13 +276,13 @@ function CtxShell({ token }: { token: string }) {
                     variant="ghost"
                     size="icon-sm"
                     onClick={refresh}
-                    aria-label="Refresh workspace"
+                    aria-label={t("refreshWorkspace")}
                   />
                 }
               >
                 <UploadIcon />
               </TooltipTrigger>
-              <TooltipContent>Refresh workspace</TooltipContent>
+              <TooltipContent>{t("refreshWorkspace")}</TooltipContent>
             </Tooltip>
           </header>
           <Routes>
@@ -299,6 +312,7 @@ function CtxShell({ token }: { token: string }) {
 function OverviewPage({ token }: { token: string }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { t } = useI18n()
   const contexts = useQuery({
     queryKey: ["contexts"],
     queryFn: () => request<Context[]>("/api/v1/contexts", token),
@@ -313,16 +327,15 @@ function OverviewPage({ token }: { token: string }) {
       <section className="flex flex-wrap items-end justify-between gap-4">
         <div className="max-w-2xl">
           <h1 className="text-2xl font-semibold tracking-tight text-balance">
-            Your Contexts
+            {t("contextsTitle")}
           </h1>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            A Context gives your Markdown a deliberate boundary: its documents,
-            editorial rules, AI work, and published surface.
+            {t("contextsDescription")}
           </p>
         </div>
         <Button onClick={() => setDialogOpen(true)}>
           <FolderPlusIcon data-icon="inline-start" />
-          New Context
+          {t("newContext")}
         </Button>
       </section>
       {items.length === 0 ? (
@@ -331,16 +344,13 @@ function OverviewPage({ token }: { token: string }) {
             <EmptyMedia variant="icon">
               <BookOpenIcon />
             </EmptyMedia>
-            <EmptyTitle>Start with one bounded idea</EmptyTitle>
-            <EmptyDescription>
-              Create a Context for a product, research area, personal wiki, or
-              publication. Markdown stays the source of truth.
-            </EmptyDescription>
+            <EmptyTitle>{t("emptyContextTitle")}</EmptyTitle>
+            <EmptyDescription>{t("emptyContextDescription")}</EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
             <Button onClick={() => setDialogOpen(true)}>
               <PlusIcon data-icon="inline-start" />
-              Create Context
+              {t("createContext")}
             </Button>
           </EmptyContent>
         </Empty>
@@ -356,15 +366,22 @@ function OverviewPage({ token }: { token: string }) {
                       context.visibility === "public" ? "secondary" : "outline"
                     }
                   >
-                    {context.visibility}
+                    {context.visibility === "public"
+                      ? t("visibilityPublic")
+                      : t("visibilityPrivate")}
                   </Badge>
                 </div>
                 <CardDescription>
-                  {context.description || "No description yet."}
+                  {context.description || t("noDescription")}
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex items-center justify-between text-sm text-muted-foreground">
-                <span>{context.document_count} documents</span>
+                <span>
+                  {t("documentCount").replace(
+                    "{count}",
+                    String(context.document_count)
+                  )}
+                </span>
                 <span className="font-mono text-xs">/{context.slug}</span>
               </CardContent>
               <CardFooter>
@@ -373,7 +390,7 @@ function OverviewPage({ token }: { token: string }) {
                   className="w-full"
                   onClick={() => navigate(`/contexts/${context.id}`)}
                 >
-                  Open Context
+                  {t("openContext")}
                 </Button>
               </CardFooter>
             </Card>
@@ -396,6 +413,7 @@ function OverviewPage({ token }: { token: string }) {
 function ContextEditor({ token }: { token: string }) {
   const { contextId = "" } = useParams()
   const queryClient = useQueryClient()
+  const { t } = useI18n()
   const contexts = useQuery({
     queryKey: ["contexts"],
     queryFn: () => request<Context[]>("/api/v1/contexts", token),
@@ -431,12 +449,12 @@ function ContextEditor({ token }: { token: string }) {
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">{context.name}</p>
           <p className="truncate text-xs text-muted-foreground">
-            {context.description || "No editorial description"}
+            {context.description || t("noEditorialDescription")}
           </p>
         </div>
         <Button size="sm" onClick={() => setNewDocumentOpen(true)}>
           <PlusIcon data-icon="inline-start" />
-          Document
+          {t("document")}
         </Button>
       </div>
       <div className="border-b p-3 lg:hidden">
@@ -447,7 +465,7 @@ function ContextEditor({ token }: { token: string }) {
           }}
         >
           <SelectTrigger>
-            <SelectValue placeholder="Select document" />
+            <SelectValue placeholder={t("selectDocument")} />
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
@@ -532,10 +550,13 @@ function DocumentTree({
   selectedId: string
   onSelect: (id: string) => void
 }) {
+  const { t } = useI18n()
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between px-4 py-3">
-        <p className="text-xs font-medium text-muted-foreground">DOCUMENTS</p>
+        <p className="text-xs font-medium text-muted-foreground">
+          {t("documents")}
+        </p>
         <Badge variant="outline">{documents.length}</Badge>
       </div>
       <div className="flex flex-col gap-1 px-2 pb-3">
@@ -567,6 +588,7 @@ function DocumentEditor({
   onSaved: () => void
 }) {
   const queryClient = useQueryClient()
+  const { t } = useI18n()
   const [title, setTitle] = useState(detail.document.title)
   const [slug, setSlug] = useState(detail.document.slug)
   const [content, setContent] = useState(detail.revision.content)
@@ -578,7 +600,7 @@ function DocumentEditor({
         body: JSON.stringify({ title, slug, content }),
       }),
     onSuccess: () => {
-      toast.success("Saved as a new revision")
+      toast.success(t("savedNewRevision"))
       onSaved()
       void queryClient.invalidateQueries({ queryKey: ["document", documentId] })
     },
@@ -590,7 +612,7 @@ function DocumentEditor({
         method: "POST",
       }),
     onSuccess: () => {
-      toast.success("Published current revision")
+      toast.success(t("publishedCurrentRevision"))
       onSaved()
       void queryClient.invalidateQueries({ queryKey: ["document", documentId] })
     },
@@ -606,7 +628,9 @@ function DocumentEditor({
               detail.document.status === "published" ? "secondary" : "outline"
             }
           >
-            {detail.document.status}
+            {detail.document.status === "published"
+              ? t("statusPublished")
+              : t("statusDraft")}
           </Badge>
           <span className="font-mono text-xs text-muted-foreground">
             r:{detail.revision.id.slice(0, 8)}
@@ -627,7 +651,7 @@ function DocumentEditor({
             ) : (
               <SaveIcon data-icon="inline-start" />
             )}
-            Save
+            {t("save")}
           </Button>
           <Button
             size="sm"
@@ -642,14 +666,14 @@ function DocumentEditor({
             ) : (
               <Globe2Icon data-icon="inline-start" />
             )}
-            Publish
+            {t("publish")}
           </Button>
         </div>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 md:p-6">
         <FieldGroup>
           <Field>
-            <FieldLabel htmlFor="document-title">Title</FieldLabel>
+            <FieldLabel htmlFor="document-title">{t("title")}</FieldLabel>
             <Input
               id="document-title"
               value={title}
@@ -657,7 +681,7 @@ function DocumentEditor({
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="document-slug">Slug</FieldLabel>
+            <FieldLabel htmlFor="document-slug">{t("slug")}</FieldLabel>
             <Input
               id="document-slug"
               value={slug}
@@ -666,17 +690,14 @@ function DocumentEditor({
           </Field>
         </FieldGroup>
         <Field className="min-h-0 flex-1">
-          <FieldLabel htmlFor="document-markdown">Markdown</FieldLabel>
+          <FieldLabel htmlFor="document-markdown">{t("markdown")}</FieldLabel>
           <Textarea
             id="document-markdown"
             className="min-h-105 flex-1 font-mono text-sm leading-6"
             value={content}
             onChange={(event) => setContent(event.target.value)}
           />
-          <FieldDescription>
-            Saving writes a new immutable revision. AI never replaces this
-            source without an explicit save.
-          </FieldDescription>
+          <FieldDescription>{t("markdownDescription")}</FieldDescription>
         </Field>
       </div>
     </section>
@@ -691,6 +712,7 @@ function AiPanel({
   document: DocumentDetail
 }) {
   const queryClient = useQueryClient()
+  const { t } = useI18n()
   const [targetLanguage, setTargetLanguage] = useState("zh-Hans")
   const [run, setRun] = useState<AiRun>()
   const ai = useMutation({
@@ -704,7 +726,7 @@ function AiPanel({
       }),
     onSuccess: (result) => {
       setRun(result)
-      toast.success("AI work recorded with this revision")
+      toast.success(t("aiWorkRecorded"))
     },
     onError: showError,
   })
@@ -719,13 +741,13 @@ function AiPanel({
             title: document.document.title,
             slug: document.document.slug,
             content: document.revision.content,
-            message: "Applied AI metadata",
+            message: t("appliedAiMetadata"),
             metadata: JSON.parse(run?.output ?? "{}"),
           }),
         }
       ),
     onSuccess: () => {
-      toast.success("Metadata saved on a new revision")
+      toast.success(t("metadataSaved"))
       void queryClient.invalidateQueries({
         queryKey: ["document", document.document.id],
       })
@@ -749,7 +771,7 @@ function AiPanel({
         }
       ),
     onSuccess: () => {
-      toast.success("Translation saved as a new draft")
+      toast.success(t("translationSaved"))
       void queryClient.invalidateQueries({
         queryKey: ["documents", document.document.context_id],
       })
@@ -778,23 +800,23 @@ function AiPanel({
   return (
     <aside className="flex h-full min-h-0 flex-col">
       <div className="border-b px-4 py-3">
-        <p className="text-sm font-medium">Context AI</p>
+        <p className="text-sm font-medium">{t("contextAi")}</p>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          Works from this revision and its Context rules.
+          {t("contextAiDescription")}
         </p>
       </div>
       <Tabs defaultValue="actions" className="min-h-0 flex-1 p-4">
         <TabsList>
-          <TabsTrigger value="actions">Actions</TabsTrigger>
-          <TabsTrigger value="output">Output</TabsTrigger>
+          <TabsTrigger value="actions">{t("aiActions")}</TabsTrigger>
+          <TabsTrigger value="output">{t("aiOutput")}</TabsTrigger>
         </TabsList>
         <TabsContent value="actions" className="flex flex-col gap-3">
-          {action("metadata", "Extract metadata")}
-          {action("summary", "Summarize document")}
+          {action("metadata", t("extractMetadata"))}
+          {action("summary", t("summarizeDocument"))}
           <FieldGroup className="pt-2">
             <Field>
               <FieldLabel htmlFor="translation-language">
-                Translation language
+                {t("translationLanguage")}
               </FieldLabel>
               <Input
                 id="translation-language"
@@ -803,7 +825,7 @@ function AiPanel({
               />
             </Field>
           </FieldGroup>
-          {action("translate", "Translate Markdown")}
+          {action("translate", t("translateMarkdown"))}
         </TabsContent>
         <TabsContent value="output" className="min-h-0">
           {run ? (
@@ -825,7 +847,7 @@ function AiPanel({
                   ) : (
                     <SaveIcon data-icon="inline-start" />
                   )}
-                  Apply metadata
+                  {t("applyMetadata")}
                 </Button>
               ) : null}
               {run.task === "translate" && run.proposed_content ? (
@@ -842,14 +864,13 @@ function AiPanel({
                   ) : (
                     <FileTextIcon data-icon="inline-start" />
                   )}
-                  Save translation as draft
+                  {t("saveTranslationDraft")}
                 </Button>
               ) : null}
             </div>
           ) : (
             <p className="pt-3 text-sm leading-6 text-muted-foreground">
-              Run a metadata, summary, or translation task to inspect an
-              auditable AI output.
+              {t("aiOutputEmpty")}
             </p>
           )}
         </TabsContent>
@@ -859,33 +880,32 @@ function AiPanel({
 }
 
 function AiPanelPlaceholder() {
+  const { t } = useI18n()
   return (
     <aside className="p-4">
-      <p className="text-sm font-medium">Context AI</p>
+      <p className="text-sm font-medium">{t("contextAi")}</p>
       <p className="mt-2 text-sm leading-6 text-muted-foreground">
-        Select a document to work from its current revision.
+        {t("aiPlaceholder")}
       </p>
     </aside>
   )
 }
 
 function NoDocument({ onCreate }: { onCreate: () => void }) {
+  const { t } = useI18n()
   return (
     <Empty className="m-4 min-h-96">
       <EmptyHeader>
         <EmptyMedia variant="icon">
           <FileTextIcon />
         </EmptyMedia>
-        <EmptyTitle>Create the first document</EmptyTitle>
-        <EmptyDescription>
-          Use Docs for stable navigation or Blog for chronological writing. Both
-          remain Markdown revisions in this Context.
-        </EmptyDescription>
+        <EmptyTitle>{t("noDocumentTitle")}</EmptyTitle>
+        <EmptyDescription>{t("noDocumentDescription")}</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
         <Button onClick={onCreate}>
           <PlusIcon data-icon="inline-start" />
-          New document
+          {t("newDocument")}
         </Button>
       </EmptyContent>
     </Empty>
@@ -903,6 +923,7 @@ function ContextDialog({
   onOpenChange: (open: boolean) => void
   onCreated: (context: Context) => void
 }) {
+  const { t } = useI18n()
   const [name, setName] = useState("")
   const [slug, setSlug] = useState("")
   const [description, setDescription] = useState("")
@@ -921,7 +942,7 @@ function ContextDialog({
         }),
       }),
     onSuccess: (context) => {
-      toast.success("Context created")
+      toast.success(t("contextCreated"))
       onOpenChange(false)
       onCreated(context)
     },
@@ -931,15 +952,12 @@ function ContextDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>New Context</DialogTitle>
-          <DialogDescription>
-            A Context defines the documents and editorial instructions that AI
-            may use together.
-          </DialogDescription>
+          <DialogTitle>{t("contextDialogTitle")}</DialogTitle>
+          <DialogDescription>{t("contextDialogDescription")}</DialogDescription>
         </DialogHeader>
         <FieldGroup>
           <Field>
-            <FieldLabel htmlFor="context-name">Name</FieldLabel>
+            <FieldLabel htmlFor="context-name">{t("name")}</FieldLabel>
             <Input
               id="context-name"
               value={name}
@@ -950,18 +968,18 @@ function ContextDialog({
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="context-slug">Public slug</FieldLabel>
+            <FieldLabel htmlFor="context-slug">{t("publicSlug")}</FieldLabel>
             <Input
               id="context-slug"
               value={slug}
               onChange={(event) => setSlug(slugify(event.target.value))}
             />
-            <FieldDescription>
-              Lowercase letters, numbers, and hyphens only.
-            </FieldDescription>
+            <FieldDescription>{t("slugDescription")}</FieldDescription>
           </Field>
           <Field>
-            <FieldLabel htmlFor="context-description">Description</FieldLabel>
+            <FieldLabel htmlFor="context-description">
+              {t("description")}
+            </FieldLabel>
             <Textarea
               id="context-description"
               value={description}
@@ -970,7 +988,7 @@ function ContextDialog({
           </Field>
           <Field>
             <FieldLabel htmlFor="context-instructions">
-              AI instructions
+              {t("aiInstructions")}
             </FieldLabel>
             <Textarea
               id="context-instructions"
@@ -978,12 +996,11 @@ function ContextDialog({
               onChange={(event) => setInstructions(event.target.value)}
             />
             <FieldDescription>
-              Voice, terminology, intended audience, and evidence rules for this
-              Context.
+              {t("aiInstructionsDescription")}
             </FieldDescription>
           </Field>
           <Field>
-            <FieldLabel>Visibility</FieldLabel>
+            <FieldLabel>{t("visibility")}</FieldLabel>
             <Select
               value={visibility}
               onValueChange={(value) =>
@@ -995,8 +1012,12 @@ function ContextDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  <SelectItem value="private">Private</SelectItem>
-                  <SelectItem value="public">Public</SelectItem>
+                  <SelectItem value="private">
+                    {t("visibilityPrivate")}
+                  </SelectItem>
+                  <SelectItem value="public">
+                    {t("visibilityPublic")}
+                  </SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
@@ -1015,7 +1036,7 @@ function ContextDialog({
             ) : (
               <FolderPlusIcon data-icon="inline-start" />
             )}
-            Create Context
+            {t("createContext")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1036,9 +1057,10 @@ function DocumentDialog({
   onOpenChange: (open: boolean) => void
   onCreated: (document: DocumentDetail) => void
 }) {
+  const { locale, t } = useI18n()
   const [title, setTitle] = useState("")
   const [slug, setSlug] = useState("")
-  const [language, setLanguage] = useState("en")
+  const [language, setLanguage] = useState(locale === "zh" ? "zh-Hans" : "en")
   const [kind, setKind] = useState<"docs" | "blog">("docs")
   const create = useMutation({
     mutationFn: () =>
@@ -1057,7 +1079,7 @@ function DocumentDialog({
         }
       ),
     onSuccess: (document) => {
-      toast.success("Document created")
+      toast.success(t("documentCreated"))
       onOpenChange(false)
       onCreated(document)
     },
@@ -1067,14 +1089,14 @@ function DocumentDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>New document</DialogTitle>
+          <DialogTitle>{t("documentDialogTitle")}</DialogTitle>
           <DialogDescription>
-            Create a Markdown source document. Publishing is a separate action.
+            {t("documentDialogDescription")}
           </DialogDescription>
         </DialogHeader>
         <FieldGroup>
           <Field>
-            <FieldLabel htmlFor="new-document-title">Title</FieldLabel>
+            <FieldLabel htmlFor="new-document-title">{t("title")}</FieldLabel>
             <Input
               id="new-document-title"
               value={title}
@@ -1085,7 +1107,7 @@ function DocumentDialog({
             />
           </Field>
           <Field>
-            <FieldLabel htmlFor="new-document-slug">Slug</FieldLabel>
+            <FieldLabel htmlFor="new-document-slug">{t("slug")}</FieldLabel>
             <Input
               id="new-document-slug"
               value={slug}
@@ -1094,7 +1116,7 @@ function DocumentDialog({
           </Field>
           <Field>
             <FieldLabel htmlFor="new-document-language">
-              Source language
+              {t("sourceLanguage")}
             </FieldLabel>
             <Input
               id="new-document-language"
@@ -1103,7 +1125,7 @@ function DocumentDialog({
             />
           </Field>
           <Field>
-            <FieldLabel>Surface</FieldLabel>
+            <FieldLabel>{t("surface")}</FieldLabel>
             <Select
               value={kind}
               onValueChange={(value) => setKind(value as "docs" | "blog")}
@@ -1113,8 +1135,8 @@ function DocumentDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  <SelectItem value="docs">Docs</SelectItem>
-                  <SelectItem value="blog">Blog</SelectItem>
+                  <SelectItem value="docs">{t("surfaceDocs")}</SelectItem>
+                  <SelectItem value="blog">{t("surfaceBlog")}</SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
@@ -1133,7 +1155,7 @@ function DocumentDialog({
             ) : (
               <PlusIcon data-icon="inline-start" />
             )}
-            Create document
+            {t("createDocument")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1142,10 +1164,11 @@ function DocumentDialog({
 }
 
 function SetupPage({ token, onDone }: { token: string; onDone: () => void }) {
+  const { t } = useI18n()
   const setup = useMutation({
     mutationFn: () => request<Me>("/api/v1/setup", token, { method: "POST" }),
     onSuccess: () => {
-      toast.success("Root user configured")
+      toast.success(t("rootConfigured"))
       onDone()
     },
     onError: showError,
@@ -1154,11 +1177,8 @@ function SetupPage({ token, onDone }: { token: string; onDone: () => void }) {
     <main className="p-6">
       <Card className="mx-auto mt-16 max-w-xl">
         <CardHeader>
-          <CardTitle>Initialize CTX</CardTitle>
-          <CardDescription>
-            The first authenticated Auth Mini user becomes CTX's root
-            administrator. Sign-in stays owned by Auth Mini.
-          </CardDescription>
+          <CardTitle>{t("initializeTitle")}</CardTitle>
+          <CardDescription>{t("initializeDescription")}</CardDescription>
         </CardHeader>
         <CardContent>
           <Button disabled={setup.isPending} onClick={() => setup.mutate()}>
@@ -1170,7 +1190,7 @@ function SetupPage({ token, onDone }: { token: string; onDone: () => void }) {
             ) : (
               <ShieldCheckIcon data-icon="inline-start" />
             )}
-            Become root administrator
+            {t("becomeRoot")}
           </Button>
         </CardContent>
       </Card>
@@ -1203,6 +1223,7 @@ function AdministrationForm({
   configuration: AiConfiguration
 }) {
   const queryClient = useQueryClient()
+  const { t } = useI18n()
   const [baseUrl, setBaseUrl] = useState(configuration.base_url)
   const [model, setModel] = useState(configuration.model)
   const [apiKey, setApiKey] = useState("")
@@ -1217,7 +1238,7 @@ function AdministrationForm({
         }),
       }),
     onSuccess: () => {
-      toast.success("AI configuration saved")
+      toast.success(t("aiConfigurationSaved"))
       setApiKey("")
       void queryClient.invalidateQueries({ queryKey: ["ai-configuration"] })
     },
@@ -1227,32 +1248,28 @@ function AdministrationForm({
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 p-4 md:p-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">
-          Administration
+          {t("navigationAdministration")}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Instance-only controls stay separate from Context authoring.
+          {t("administrationDescription")}
         </p>
       </div>
       <Card>
         <CardHeader>
           <div className="flex items-start justify-between gap-4">
             <div>
-              <CardTitle>OpenAI routing</CardTitle>
-              <CardDescription>
-                CTX calls OpenAI-compatible chat completions through
-                openai.ntnl.io. The API key is encrypted on this host and never
-                returned to the browser.
-              </CardDescription>
+              <CardTitle>{t("openAiRouting")}</CardTitle>
+              <CardDescription>{t("openAiRoutingDescription")}</CardDescription>
             </div>
             <Badge variant={configuration.configured ? "secondary" : "outline"}>
-              {configuration.configured ? "configured" : "needs key"}
+              {configuration.configured ? t("configured") : t("needsKey")}
             </Badge>
           </div>
         </CardHeader>
         <CardContent>
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor="ai-base-url">Base URL</FieldLabel>
+              <FieldLabel htmlFor="ai-base-url">{t("baseUrl")}</FieldLabel>
               <Input
                 id="ai-base-url"
                 value={baseUrl}
@@ -1260,7 +1277,7 @@ function AdministrationForm({
               />
             </Field>
             <Field>
-              <FieldLabel htmlFor="ai-model">Model</FieldLabel>
+              <FieldLabel htmlFor="ai-model">{t("model")}</FieldLabel>
               <Input
                 id="ai-model"
                 value={model}
@@ -1268,17 +1285,15 @@ function AdministrationForm({
               />
             </Field>
             <Field>
-              <FieldLabel htmlFor="ai-api-key">API key</FieldLabel>
+              <FieldLabel htmlFor="ai-api-key">{t("apiKey")}</FieldLabel>
               <Input
                 id="ai-api-key"
                 type="password"
                 value={apiKey}
                 onChange={(event) => setApiKey(event.target.value)}
-                placeholder="Leave blank to keep the encrypted key"
+                placeholder={t("apiKeyPlaceholder")}
               />
-              <FieldDescription>
-                Only root can update this secret. CTX will never echo it back.
-              </FieldDescription>
+              <FieldDescription>{t("apiKeyDescription")}</FieldDescription>
             </Field>
             <Field>
               <Button
@@ -1293,7 +1308,7 @@ function AdministrationForm({
                 ) : (
                   <SaveIcon data-icon="inline-start" />
                 )}
-                Save AI configuration
+                {t("saveAiConfiguration")}
               </Button>
             </Field>
           </FieldGroup>
@@ -1305,6 +1320,7 @@ function AdministrationForm({
 
 function PublicDocumentPage() {
   const { contextSlug = "", documentSlug = "" } = useParams()
+  const { t } = useI18n()
   const document = useQuery({
     queryKey: ["public-document", contextSlug, documentSlug],
     queryFn: () =>
@@ -1316,7 +1332,7 @@ function PublicDocumentPage() {
   if (document.error || !document.data)
     return (
       <PageError
-        error={document.error ?? new Error("Published document not found")}
+        error={document.error ?? new Error(t("publishedDocumentNotFound"))}
       />
     )
   return (
@@ -1325,7 +1341,14 @@ function PublicDocumentPage() {
         <a href="#/" className="text-sm font-medium text-primary">
           CTX
         </a>
-        <Badge variant="outline">{document.data.document.kind}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline">
+            {document.data.document.kind === "docs"
+              ? t("surfaceDocs")
+              : t("surfaceBlog")}
+          </Badge>
+          <LanguageSelect />
+        </div>
       </div>
       <article className="max-w-[72ch]">
         <ReactMarkdown components={markdownComponents}>
@@ -1421,10 +1444,11 @@ function LoadingPage() {
   )
 }
 function PageError({ error }: { error: Error }) {
+  const { t } = useI18n()
   return (
     <main className="p-6">
       <Alert variant="destructive">
-        <AlertTitle>CTX could not complete this request</AlertTitle>
+        <AlertTitle>{t("requestFailed")}</AlertTitle>
         <AlertDescription>{error.message}</AlertDescription>
       </Alert>
     </main>
@@ -1440,8 +1464,16 @@ function slugify(value: string) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "")
 }
-function pageTitle(pathname: string) {
-  if (pathname === "/admin") return "Administration"
-  if (pathname.startsWith("/contexts")) return "Context editor"
-  return "Workspace"
+function pageTitle(
+  pathname: string,
+  t: (
+    key:
+      | "pageTitleAdministration"
+      | "pageTitleContextEditor"
+      | "pageTitleWorkspace"
+  ) => string
+) {
+  if (pathname === "/admin") return t("pageTitleAdministration")
+  if (pathname.startsWith("/contexts")) return t("pageTitleContextEditor")
+  return t("pageTitleWorkspace")
 }
