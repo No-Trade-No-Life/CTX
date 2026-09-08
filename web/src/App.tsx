@@ -1,7 +1,14 @@
-import { useState, type ReactNode } from "react"
+import {
+  Children,
+  isValidElement,
+  useEffect,
+  useId,
+  useState,
+  type ReactNode,
+} from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useAuthMini } from "auth-mini-react-components"
-import { LinkitMyInfo } from "linkit-react-components"
+import { LinkitMyInfo, LinkitUserInfo } from "linkit-react-components"
 import {
   ArrowLeftIcon,
   BookOpenIcon,
@@ -19,6 +26,7 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import {
   Navigate,
   Route,
@@ -26,6 +34,7 @@ import {
   useLocation,
   useNavigate,
   useParams,
+  useSearchParams,
 } from "react-router-dom"
 import { toast } from "sonner"
 
@@ -36,6 +45,7 @@ import type {
   AiRun,
   Document,
   DocumentDetail,
+  LanguagePreferences,
   Me,
   PublicDocument,
   PublicDocumentDetail,
@@ -318,6 +328,7 @@ function DocumentListPage({ token }: { token: string }) {
           {t("newDocument")}
         </Button>
       </section>
+      <LanguagePreferencesPanel token={token} />
       {items.length === 0 ? (
         <Empty className="min-h-80">
           <EmptyHeader>
@@ -352,6 +363,88 @@ function DocumentListPage({ token }: { token: string }) {
         </section>
       )}
     </main>
+  )
+}
+
+function LanguagePreferencesPanel({ token }: { token: string }) {
+  const queryClient = useQueryClient()
+  const { t } = useI18n()
+  const preferences = useQuery({
+    queryKey: ["language-preferences", token],
+    queryFn: () =>
+      request<LanguagePreferences>("/api/v1/me/language-preferences", token),
+  })
+  const [value, setValue] = useState<string>()
+  const update = useMutation({
+    mutationFn: () =>
+      request<LanguagePreferences>("/api/v1/me/language-preferences", token, {
+        method: "PUT",
+        body: JSON.stringify({
+          languages: (value ?? preferences.data?.languages.join(", ") ?? "")
+            .split(",")
+            .map((language) => language.trim())
+            .filter(Boolean),
+        }),
+      }),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["language-preferences", token], result)
+      setValue(result.languages.join(", "))
+      toast.success(t("languagePreferencesSaved"))
+    },
+    onError: showError,
+  })
+
+  if (preferences.error)
+    return (
+      <Alert variant="destructive" className="max-w-2xl">
+        <AlertTitle>{t("requestFailed")}</AlertTitle>
+        <AlertDescription>{preferences.error.message}</AlertDescription>
+      </Alert>
+    )
+
+  return (
+    <section
+      aria-labelledby="publication-languages-title"
+      className="max-w-2xl rounded-md border bg-muted/30 p-4"
+    >
+      <div>
+        <h2 id="publication-languages-title" className="text-sm font-medium">
+          {t("languageMatrix")}
+        </h2>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+          {t("languageMatrixDescription")}
+        </p>
+      </div>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+        <Field className="min-w-0 flex-1">
+          <FieldLabel htmlFor="publication-languages" className="sr-only">
+            {t("languageMatrix")}
+          </FieldLabel>
+          <Input
+            id="publication-languages"
+            value={value ?? preferences.data?.languages.join(", ") ?? ""}
+            placeholder={t("languageMatrixPlaceholder")}
+            disabled={preferences.isPending || update.isPending}
+            onChange={(event) => setValue(event.target.value)}
+          />
+        </Field>
+        <Button
+          className="sm:shrink-0"
+          disabled={preferences.isPending || update.isPending}
+          onClick={() => update.mutate()}
+        >
+          {update.isPending ? (
+            <LoaderCircleIcon
+              className="animate-spin"
+              data-icon="inline-start"
+            />
+          ) : (
+            <SaveIcon data-icon="inline-start" />
+          )}
+          {t("saveLanguagePreferences")}
+        </Button>
+      </div>
+    </section>
   )
 }
 
@@ -405,12 +498,17 @@ function NewDocumentPage({ token }: { token: string }) {
   const queryClient = useQueryClient()
   const { t } = useI18n()
   const [title, setTitle] = useState("")
+  const [sourceLanguage, setSourceLanguage] = useState("und")
   const [content, setContent] = useState("")
   const create = useMutation({
     mutationFn: () =>
       request<DocumentDetail>("/api/v1/documents", token, {
         method: "POST",
-        body: JSON.stringify({ title: title.trim(), content }),
+        body: JSON.stringify({
+          title: title.trim(),
+          source_language: sourceLanguage.trim(),
+          content,
+        }),
       }),
     onSuccess: (detail) => {
       toast.success(t("documentCreated"))
@@ -444,8 +542,10 @@ function NewDocumentPage({ token }: { token: string }) {
       />
       <EditorFields
         title={title}
+        sourceLanguage={sourceLanguage}
         content={content}
         onTitleChange={setTitle}
+        onSourceLanguageChange={setSourceLanguage}
         onContentChange={setContent}
       />
     </main>
@@ -488,13 +588,22 @@ function ExistingDocumentEditor({
   const queryClient = useQueryClient()
   const { t } = useI18n()
   const [title, setTitle] = useState(detail.document.title)
+  const [sourceLanguage, setSourceLanguage] = useState(
+    detail.document.source_language
+  )
   const [content, setContent] = useState(detail.revision.content)
   const isDirty =
-    title !== detail.document.title || content !== detail.revision.content
+    title !== detail.document.title ||
+    sourceLanguage !== detail.document.source_language ||
+    content !== detail.revision.content
   const saveCurrentRevision = () =>
     request<DocumentDetail>(`/api/v1/documents/${detail.document.id}`, token, {
       method: "PUT",
-      body: JSON.stringify({ title: title.trim(), content }),
+      body: JSON.stringify({
+        title: title.trim(),
+        source_language: sourceLanguage.trim(),
+        content,
+      }),
     })
   const save = useMutation({
     mutationFn: saveCurrentRevision,
@@ -604,9 +713,11 @@ function ExistingDocumentEditor({
         <Separator className="my-4" />
         <EditorFields
           title={title}
+          sourceLanguage={sourceLanguage}
           content={content}
           disabled={isWriting}
           onTitleChange={setTitle}
+          onSourceLanguageChange={setSourceLanguage}
           onContentChange={setContent}
         />
       </section>
@@ -615,7 +726,9 @@ function ExistingDocumentEditor({
           token={token}
           detail={detail}
           title={title}
+          sourceLanguage={sourceLanguage}
           content={content}
+          onSourceLanguageChange={setSourceLanguage}
           isDirty={isDirty}
           isSaving={save.isPending}
           isPublishing={publish.isPending}
@@ -657,15 +770,19 @@ function EditorTopbar({
 
 function EditorFields({
   title,
+  sourceLanguage,
   content,
   disabled = false,
   onTitleChange,
+  onSourceLanguageChange,
   onContentChange,
 }: {
   title: string
+  sourceLanguage: string
   content: string
   disabled?: boolean
   onTitleChange: (value: string) => void
+  onSourceLanguageChange: (value: string) => void
   onContentChange: (value: string) => void
 }) {
   const { t } = useI18n()
@@ -680,6 +797,19 @@ function EditorFields({
           disabled={disabled}
           onChange={(event) => onTitleChange(event.target.value)}
         />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="document-source-language">
+          {t("sourceLanguage")}
+        </FieldLabel>
+        <Input
+          id="document-source-language"
+          value={sourceLanguage}
+          placeholder={t("sourceLanguagePlaceholder")}
+          disabled={disabled}
+          onChange={(event) => onSourceLanguageChange(event.target.value)}
+        />
+        <FieldDescription>{t("sourceLanguageDescription")}</FieldDescription>
       </Field>
       <Field>
         <FieldLabel htmlFor="document-markdown">{t("markdown")}</FieldLabel>
@@ -700,7 +830,9 @@ function AiPanel({
   token,
   detail,
   title,
+  sourceLanguage,
   content,
+  onSourceLanguageChange,
   isDirty,
   isSaving,
   isPublishing,
@@ -708,23 +840,21 @@ function AiPanel({
   token: string
   detail: DocumentDetail
   title: string
+  sourceLanguage: string
   content: string
+  onSourceLanguageChange: (value: string) => void
   isDirty: boolean
   isSaving: boolean
   isPublishing: boolean
 }) {
   const queryClient = useQueryClient()
   const { t } = useI18n()
-  const [targetLanguage, setTargetLanguage] = useState("zh-Hans")
   const [run, setRun] = useState<AiRun>()
   const ai = useMutation({
     mutationFn: (task: AiRun["task"]) =>
       request<AiRun>(`/api/v1/documents/${detail.document.id}/ai`, token, {
         method: "POST",
-        body: JSON.stringify({
-          task,
-          target_language: task === "translate" ? targetLanguage : undefined,
-        }),
+        body: JSON.stringify({ task }),
       }),
     onSuccess: (result) => {
       setRun(result)
@@ -741,6 +871,7 @@ function AiPanel({
           method: "PUT",
           body: JSON.stringify({
             title: title.trim(),
+            source_language: sourceLanguage.trim(),
             content,
             message: t("appliedAiMetadata"),
             metadata: JSON.parse(run?.output ?? "{}"),
@@ -755,24 +886,8 @@ function AiPanel({
     },
     onError: showError,
   })
-  const saveTranslation = useMutation({
-    mutationFn: () =>
-      request<DocumentDetail>("/api/v1/documents", token, {
-        method: "POST",
-        body: JSON.stringify({
-          title: `${title.trim()} (${targetLanguage})`,
-          content: run?.proposed_content,
-        }),
-      }),
-    onSuccess: () => {
-      toast.success(t("translationSaved"))
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
-    },
-    onError: showError,
-  })
   const needsSaveBeforeAi = isDirty || isSaving || isPublishing
-  const isAiActionPending =
-    ai.isPending || applyMetadata.isPending || saveTranslation.isPending
+  const isAiActionPending = ai.isPending || applyMetadata.isPending
   const action = (task: AiRun["task"], label: string) => (
     <Button
       key={task}
@@ -813,18 +928,7 @@ function AiPanel({
             ) : null}
             {action("metadata", t("extractMetadata"))}
             {action("summary", t("summarizeDocument"))}
-            <Field>
-              <FieldLabel htmlFor="translation-language">
-                {t("translationLanguage")}
-              </FieldLabel>
-              <Input
-                id="translation-language"
-                value={targetLanguage}
-                disabled={needsSaveBeforeAi || isAiActionPending}
-                onChange={(event) => setTargetLanguage(event.target.value)}
-              />
-            </Field>
-            {action("translate", t("translateMarkdown"))}
+            {action("detect_language", t("detectSourceLanguage"))}
           </div>
         </TabsContent>
         <TabsContent value="output" className="pt-4">
@@ -850,21 +954,14 @@ function AiPanel({
                   {t("applyMetadata")}
                 </Button>
               ) : null}
-              {run.task === "translate" && run.proposed_content ? (
+              {run.task === "detect_language" ? (
                 <Button
                   variant="outline"
                   disabled={needsSaveBeforeAi || isAiActionPending}
-                  onClick={() => saveTranslation.mutate()}
+                  onClick={() => onSourceLanguageChange(run.output.trim())}
                 >
-                  {saveTranslation.isPending ? (
-                    <LoaderCircleIcon
-                      className="animate-spin"
-                      data-icon="inline-start"
-                    />
-                  ) : (
-                    <FileTextIcon data-icon="inline-start" />
-                  )}
-                  {t("saveTranslationDraft")}
+                  <LanguagesIcon data-icon="inline-start" />
+                  {t("applyDetectedLanguage")}
                 </Button>
               ) : null}
             </div>
@@ -970,18 +1067,23 @@ function PublicDocumentRow({
   const { t } = useI18n()
   return (
     <article className="group flex items-center gap-4 py-5">
-      <Button
-        variant="ghost"
-        className="min-w-0 flex-1 justify-start px-0 text-left hover:bg-transparent"
-        onClick={onOpen}
-      >
-        <span className="min-w-0">
-          <span className="block truncate font-medium">{document.title}</span>
-          <span className="mt-1 block text-sm font-normal text-muted-foreground">
-            {t("publishedOn").replace("{date}", date)}
+      <div className="min-w-0 flex-1">
+        <Button
+          variant="ghost"
+          className="w-full justify-start px-0 text-left hover:bg-transparent"
+          onClick={onOpen}
+        >
+          <span className="min-w-0">
+            <span className="block truncate font-medium">{document.title}</span>
+            <span className="mt-1 block text-sm font-normal text-muted-foreground">
+              {t("publishedOn").replace("{date}", date)}
+            </span>
           </span>
-        </span>
-      </Button>
+        </Button>
+        <div className="mt-2">
+          <LinkitUserInfo userId={document.owner_id} compact />
+        </div>
+      </div>
       <Button variant="ghost" size="sm" onClick={onOpen}>
         {t("readArticle")}
         <ArrowLeftIcon className="rotate-180" data-icon="inline-end" />
@@ -994,10 +1096,18 @@ function PublicDocumentPage() {
   const { documentId = "" } = useParams()
   const navigate = useNavigate()
   const { locale, t } = useI18n()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedLanguage = searchParams.get("language")
   const document = useQuery({
-    queryKey: ["public-document", documentId],
+    queryKey: ["public-document", documentId, requestedLanguage],
     queryFn: () =>
-      request<PublicDocumentDetail>(`/api/public/documents/${documentId}`),
+      request<PublicDocumentDetail>(
+        `/api/public/documents/${documentId}${
+          requestedLanguage
+            ? `?language=${encodeURIComponent(requestedLanguage)}`
+            : ""
+        }`
+      ),
     enabled: Boolean(documentId),
   })
 
@@ -1036,14 +1146,65 @@ function PublicDocumentPage() {
               formatDate(document.data.published_at, locale)
             )}
           </p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <LinkitUserInfo userId={document.data.owner_id} compact />
+            <ArticleLanguageSelect
+              document={document.data}
+              onLanguageChange={(language) => {
+                const next = new URLSearchParams(searchParams)
+                if (language === document.data.source_language)
+                  next.delete("language")
+                else next.set("language", language)
+                setSearchParams(next)
+              }}
+            />
+          </div>
         </header>
         <article className="mt-10 max-w-[72ch]">
-          <ReactMarkdown components={markdownComponents}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={markdownComponents}
+          >
             {document.data.content}
           </ReactMarkdown>
         </article>
       </div>
     </main>
+  )
+}
+
+function ArticleLanguageSelect({
+  document,
+  onLanguageChange,
+}: {
+  document: PublicDocumentDetail
+  onLanguageChange: (language: string) => void
+}) {
+  const { t } = useI18n()
+  if (document.available_languages.length < 2)
+    return <Badge variant="outline">{document.language}</Badge>
+
+  return (
+    <Select
+      value={document.language}
+      onValueChange={(language) => {
+        if (language) onLanguageChange(language)
+      }}
+    >
+      <SelectTrigger size="sm" aria-label={t("articleLanguage")}>
+        <LanguagesIcon data-icon="inline-start" />
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent align="start">
+        <SelectGroup>
+          {document.available_languages.map((language) => (
+            <SelectItem key={language} value={language}>
+              {language}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
   )
 }
 
@@ -1192,6 +1353,95 @@ function AdministrationPage({ token }: { token: string }) {
   )
 }
 
+function MermaidDiagram({ chart }: { chart: string }) {
+  const id = useId().replaceAll(":", "")
+  const [svg, setSvg] = useState<string>()
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void import("mermaid")
+      .then(({ default: mermaid }) => {
+        if (cancelled) return null
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: document.documentElement.classList.contains("dark")
+            ? "dark"
+            : "default",
+        })
+        return mermaid.render(`ctx-mermaid-${id}`, chart)
+      })
+      .then((result) => {
+        if (!cancelled && result) setSvg(result.svg)
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [chart, id])
+
+  if (failed)
+    return (
+      <pre className="mt-5 overflow-x-auto rounded-md bg-muted p-4 text-sm leading-6">
+        <code className="font-mono">{chart}</code>
+      </pre>
+    )
+  if (!svg)
+    return (
+      <div
+        aria-busy="true"
+        aria-label="Loading Mermaid diagram"
+        className="mt-5"
+      >
+        <Skeleton className="h-52 w-full" />
+      </div>
+    )
+  return (
+    <div
+      role="img"
+      aria-label="Mermaid diagram"
+      className="mt-5 overflow-x-auto rounded-md border bg-muted/30 p-4 [&_svg]:mx-auto [&_svg]:min-w-max"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  )
+}
+
+function MarkdownPre({ children }: { children?: ReactNode }) {
+  const code = Children.toArray(children).find((child) =>
+    isValidElement<{ className?: string; children?: ReactNode }>(child)
+  )
+  if (
+    isValidElement<{ className?: string; children?: ReactNode }>(code) &&
+    code.props.className?.includes("language-mermaid")
+  )
+    return (
+      <MermaidDiagram
+        chart={markdownText(code.props.children).replace(/\n$/, "")}
+      />
+    )
+
+  return (
+    <pre className="mt-5 overflow-x-auto rounded-md bg-muted p-4 text-sm leading-6">
+      {children}
+    </pre>
+  )
+}
+
+function markdownText(children: ReactNode): string {
+  return Children.toArray(children)
+    .map((child) => {
+      if (typeof child === "string" || typeof child === "number")
+        return String(child)
+      if (isValidElement<{ children?: ReactNode }>(child))
+        return markdownText(child.props.children)
+      return ""
+    })
+    .join("")
+}
+
 const markdownComponents = {
   h1: ({ children }: { children?: ReactNode }) => (
     <h1 className="mt-10 text-3xl font-semibold tracking-tight text-balance first:mt-0">
@@ -1214,25 +1464,55 @@ const markdownComponents = {
       {children}
     </blockquote>
   ),
-  ul: ({ children }: { children?: ReactNode }) => (
-    <ul className="mt-5 list-disc pl-6 text-base leading-7">{children}</ul>
+  ul: ({
+    children,
+    className,
+  }: {
+    children?: ReactNode
+    className?: string
+  }) => (
+    <ul
+      className={
+        className?.includes("contains-task-list")
+          ? "mt-5 list-none pl-0 text-base leading-7"
+          : "mt-5 list-disc pl-6 text-base leading-7"
+      }
+    >
+      {children}
+    </ul>
   ),
   ol: ({ children }: { children?: ReactNode }) => (
     <ol className="mt-5 list-decimal pl-6 text-base leading-7">{children}</ol>
   ),
-  li: ({ children }: { children?: ReactNode }) => (
-    <li className="mt-1">{children}</li>
+  li: ({
+    children,
+    className,
+  }: {
+    children?: ReactNode
+    className?: string
+  }) => (
+    <li
+      className={
+        className?.includes("task-list-item") ? "mt-2 flex gap-2" : "mt-1"
+      }
+    >
+      {children}
+    </li>
   ),
-  code: ({ children }: { children?: ReactNode }) => (
-    <code className="rounded-sm bg-muted px-1 py-0.5 font-mono text-sm">
+  code: ({
+    children,
+    className,
+  }: {
+    children?: ReactNode
+    className?: string
+  }) => (
+    <code
+      className={`rounded-sm bg-muted px-1 py-0.5 font-mono text-sm ${className ?? ""}`}
+    >
       {children}
     </code>
   ),
-  pre: ({ children }: { children?: ReactNode }) => (
-    <pre className="mt-5 overflow-x-auto rounded-md bg-muted p-4 text-sm leading-6">
-      {children}
-    </pre>
-  ),
+  pre: MarkdownPre,
   a: ({ children, href }: { children?: ReactNode; href?: string }) => (
     <a href={href} className="text-primary underline underline-offset-4">
       {children}
@@ -1242,6 +1522,9 @@ const markdownComponents = {
     <img src={src} alt={alt ?? ""} className="mt-5 max-w-full rounded-md" />
   ),
   hr: () => <Separator className="my-8" />,
+  del: ({ children }: { children?: ReactNode }) => (
+    <del className="text-muted-foreground">{children}</del>
+  ),
   table: ({ children }: { children?: ReactNode }) => (
     <div className="mt-5 overflow-x-auto">
       <table className="w-full border-collapse text-left text-sm">

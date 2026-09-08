@@ -8,10 +8,12 @@ export type Document = {
   id: string
   owner_id: string
   title: string
+  source_language: string
   status: "draft" | "published"
   metadata: Record<string, unknown>
   current_revision_id: string
   published_revision_id: string | null
+  published_source_language: string | null
   created_at: number
   updated_at: number
 }
@@ -32,15 +34,24 @@ export type DocumentDetail = {
 
 export type PublicDocument = {
   id: string
+  owner_id: string
   title: string
   published_at: number
 }
 
 export type PublicDocumentDetail = {
   id: string
+  owner_id: string
   title: string
   content: string
+  source_language: string
+  language: string
+  available_languages: string[]
   published_at: number
+}
+
+export type LanguagePreferences = {
+  languages: string[]
 }
 
 export type AiConfiguration = {
@@ -53,7 +64,7 @@ export type AiRun = {
   id: string
   document_id: string
   source_revision_id: string
-  task: "metadata" | "summary" | "translate"
+  task: "metadata" | "summary" | "detect_language"
   output: string
   proposed_content: string | null
   created_at: number
