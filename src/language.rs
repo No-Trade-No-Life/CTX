@@ -32,7 +32,7 @@ mod tests {
     use super::normalize_language_tag;
 
     #[test]
-    fn normalizes_language_tags_used_by_the_publishing_matrix() {
+    fn normalizes_language_tags_used_by_publication_and_reading() {
         assert_eq!(normalize_language_tag("zh-cn").as_deref(), Some("zh-CN"));
         assert_eq!(normalize_language_tag("en-us").as_deref(), Some("en-US"));
         assert_eq!(normalize_language_tag("ja-JP").as_deref(), Some("ja-JP"));

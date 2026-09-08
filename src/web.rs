@@ -17,8 +17,7 @@ use crate::{
     ai::{self, AiTask},
     db::{
         AiConfiguration, AiRequest, AiRun, Database, DatabaseError, Document, DocumentDetail,
-        DocumentSave, LanguagePreferences, NewDocument, PublicDocumentDetail,
-        PublicDocumentSummary,
+        DocumentSave, NewDocument, PublicDocumentDetail, PublicDocumentSummary,
     },
     language::normalize_language_tag,
 };
@@ -44,10 +43,6 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         )
         .route("/documents/{document_id}/publish", post(publish_document))
         .route("/documents/{document_id}/ai", post(run_ai_task))
-        .route(
-            "/me/language-preferences",
-            get(get_language_preferences).put(update_language_preferences),
-        )
         .route(
             "/admin/ai",
             get(get_ai_configuration).put(update_ai_configuration),
@@ -173,11 +168,10 @@ async fn publish_document(
     Path(document_id): Path<String>,
 ) -> Result<Json<Document>, ApiError> {
     let document = require_document_owner(&state.database, &principal, &document_id)?;
-    let preferences = state.database.language_preferences(&principal.subject)?;
     Ok(Json(
         state
             .database
-            .publish_document(&document_id, &document.revision.id, &preferences.languages)?
+            .publish_document(&document_id, &document.revision.id)?
             .ok_or_else(ApiError::conflict)?,
     ))
 }
@@ -200,27 +194,6 @@ async fn run_ai_task(
         input.task.as_str(),
         &output.output,
         None,
-    )?))
-}
-
-async fn get_language_preferences(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
-) -> Result<Json<LanguagePreferences>, ApiError> {
-    Ok(Json(
-        state.database.language_preferences(&principal.subject)?,
-    ))
-}
-
-async fn update_language_preferences(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
-    Json(input): Json<LanguagePreferencesInput>,
-) -> Result<Json<LanguagePreferences>, ApiError> {
-    let languages = normalize_preference_languages(input.languages)?;
-    Ok(Json(state.database.update_language_preferences(
-        &principal.subject,
-        &languages,
     )?))
 }
 
@@ -263,8 +236,11 @@ async fn list_ai_requests(
 
 async fn list_public_documents(
     State(state): State<AppState>,
+    Query(query): Query<PublicDocumentQuery>,
 ) -> Result<Json<Vec<PublicDocumentSummary>>, ApiError> {
-    Ok(Json(state.database.public_documents()?))
+    Ok(Json(state.database.public_documents(
+        requested_language(query.language.as_deref())?.as_deref(),
+    )?))
 }
 
 async fn public_document(
@@ -272,14 +248,7 @@ async fn public_document(
     Path(document_id): Path<String>,
     Query(query): Query<PublicDocumentQuery>,
 ) -> Result<Json<PublicDocumentDetail>, ApiError> {
-    let language = query
-        .language
-        .as_deref()
-        .map(|value| {
-            normalize_language_tag(value)
-                .ok_or_else(|| ApiError::bad_request("language must be a BCP 47 tag"))
-        })
-        .transpose()?;
+    let language = requested_language(query.language.as_deref())?;
     let mut document = state
         .database
         .public_document(&document_id, language.as_deref())?
@@ -334,11 +303,6 @@ struct DocumentUpdateInput {
 #[derive(Debug, Deserialize)]
 struct AiTaskInput {
     task: AiTask,
-}
-
-#[derive(Debug, Deserialize)]
-struct LanguagePreferencesInput {
-    languages: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -413,21 +377,13 @@ fn source_language_or_und(value: Option<&str>) -> Result<String, ApiError> {
     }
 }
 
-fn normalize_preference_languages(languages: Vec<String>) -> Result<Vec<String>, ApiError> {
-    let mut normalized = Vec::with_capacity(languages.len());
-    for language in languages {
-        let language = normalize_language_tag(&language)
-            .ok_or_else(|| ApiError::bad_request("language preferences must use BCP 47 tags"))?;
-        if language == "und" {
-            return Err(ApiError::bad_request(
-                "language preferences cannot include und",
-            ));
-        }
-        if !normalized.contains(&language) {
-            normalized.push(language);
-        }
-    }
-    Ok(normalized)
+fn requested_language(value: Option<&str>) -> Result<Option<String>, ApiError> {
+    value
+        .map(|language| {
+            normalize_language_tag(language)
+                .ok_or_else(|| ApiError::bad_request("language must be a BCP 47 tag"))
+        })
+        .transpose()
 }
 
 fn validate_document_input(input: &DocumentInput) -> Result<(), ApiError> {
@@ -497,21 +453,15 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_preference_languages, source_language_or_und};
+    use super::{requested_language, source_language_or_und};
 
     #[test]
-    fn normalizes_and_deduplicates_author_language_preferences() {
+    fn normalizes_requested_reader_languages() {
         assert_eq!(
-            normalize_preference_languages(vec![
-                "zh-cn".to_owned(),
-                "en-US".to_owned(),
-                "zh-CN".to_owned(),
-            ])
-            .unwrap(),
-            vec!["zh-CN", "en-US"]
+            requested_language(Some("es-es")).unwrap().as_deref(),
+            Some("es-ES")
         );
-        assert!(normalize_preference_languages(vec!["und".to_owned()]).is_err());
-        assert!(normalize_preference_languages(vec!["Chinese".to_owned()]).is_err());
+        assert!(requested_language(Some("Spanish")).is_err());
     }
 
     #[test]
