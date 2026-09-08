@@ -16,9 +16,9 @@ use tower_http::trace::TraceLayer;
 use crate::{
     ai::{self, AiTask},
     db::{
-        AiConfiguration, AiRun, Database, DatabaseError, Document, DocumentDetail, DocumentSave,
-        LanguagePreferences, NewDocument, PublicDocumentDetail, PublicDocumentSummary,
-        PublishedTranslation,
+        AiConfiguration, AiRequest, AiRun, Database, DatabaseError, Document, DocumentDetail,
+        DocumentSave, LanguagePreferences, NewDocument, PublicDocumentDetail,
+        PublicDocumentSummary,
     },
     language::normalize_language_tag,
 };
@@ -52,6 +52,7 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
             "/admin/ai",
             get(get_ai_configuration).put(update_ai_configuration),
         )
+        .route("/admin/ai/requests", get(list_ai_requests))
         .route_layer(auth);
     Router::new()
         .route("/api/health", get(health))
@@ -173,23 +174,10 @@ async fn publish_document(
 ) -> Result<Json<Document>, ApiError> {
     let document = require_document_owner(&state.database, &principal, &document_id)?;
     let preferences = state.database.language_preferences(&principal.subject)?;
-    let source_language = published_source_language(&state.database, &document).await?;
-    let translations = publish_translations(
-        &state.database,
-        &document,
-        &source_language,
-        preferences.languages,
-    )
-    .await?;
     Ok(Json(
         state
             .database
-            .publish_document(
-                &document_id,
-                &document.revision.id,
-                &source_language,
-                &translations,
-            )?
+            .publish_document(&document_id, &document.revision.id, &preferences.languages)?
             .ok_or_else(ApiError::conflict)?,
     ))
 }
@@ -256,11 +244,21 @@ async fn update_ai_configuration(
     if input.model.trim().is_empty() {
         return Err(ApiError::bad_request("AI model is required"));
     }
-    Ok(Json(state.database.update_ai_configuration(
+    let configuration = state.database.update_ai_configuration(
         input.base_url.trim_end_matches('/'),
         input.model.trim(),
         input.api_key.as_deref(),
-    )?))
+    )?;
+    state.database.requeue_failed_ai_requests()?;
+    Ok(Json(configuration))
+}
+
+async fn list_ai_requests(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+) -> Result<Json<Vec<AiRequest>>, ApiError> {
+    Actor::from_principal(&state.database, &principal)?.assert_root()?;
+    Ok(Json(state.database.ai_requests()?))
 }
 
 async fn list_public_documents(
@@ -282,12 +280,17 @@ async fn public_document(
                 .ok_or_else(|| ApiError::bad_request("language must be a BCP 47 tag"))
         })
         .transpose()?;
-    Ok(Json(
-        state
+    let mut document = state
+        .database
+        .public_document(&document_id, language.as_deref())?
+        .ok_or_else(ApiError::not_found)?;
+    if document.is_translation_fallback && language.as_deref().is_some_and(is_reader_language) {
+        document.translation_status = state
             .database
-            .public_document(&document_id, language.as_deref())?
-            .ok_or_else(ApiError::not_found)?,
-    ))
+            .request_public_translation(&document_id, language.as_deref().unwrap_or_default())?
+            .or(document.translation_status);
+    }
+    Ok(Json(document))
 }
 
 async fn static_asset(uri: Uri) -> Response {
@@ -398,50 +401,8 @@ fn require_document_owner(
     }
 }
 
-async fn published_source_language(
-    database: &Database,
-    document: &DocumentDetail,
-) -> Result<String, ApiError> {
-    if document.document.source_language != "und" {
-        return Ok(document.document.source_language.clone());
-    }
-    let credentials = database
-        .ai_credentials()?
-        .ok_or_else(|| ApiError::unavailable("AI is not configured by the root administrator"))?;
-    ai::detect_language(&credentials, document)
-        .await
-        .map_err(ApiError::from)
-}
-
-async fn publish_translations(
-    database: &Database,
-    document: &DocumentDetail,
-    source_language: &str,
-    languages: Vec<String>,
-) -> Result<Vec<PublishedTranslation>, ApiError> {
-    let mut target_languages = Vec::new();
-    for language in languages {
-        if language != source_language && !target_languages.contains(&language) {
-            target_languages.push(language);
-        }
-    }
-    if target_languages.is_empty() {
-        return Ok(Vec::new());
-    }
-    let credentials = database
-        .ai_credentials()?
-        .ok_or_else(|| ApiError::unavailable("AI is not configured by the root administrator"))?;
-    let mut translations = Vec::with_capacity(target_languages.len());
-    for language in target_languages {
-        let translation =
-            ai::translate_document(&credentials, document, source_language, &language).await?;
-        translations.push(PublishedTranslation {
-            language,
-            title: translation.title,
-            content: translation.content,
-        });
-    }
-    Ok(translations)
+fn is_reader_language(language: &str) -> bool {
+    matches!(language, "zh-CN" | "en-US" | "ja-JP" | "es-ES")
 }
 
 fn source_language_or_und(value: Option<&str>) -> Result<String, ApiError> {

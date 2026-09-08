@@ -60,6 +60,10 @@ impl App {
             "ctx.ntnl.io",
             JwksCachePolicy::default(),
         )?;
+        let worker_database = self.database.clone();
+        tokio::spawn(async move {
+            ai::run_worker(worker_database).await;
+        });
         let app = web::router(self.database, auth);
         let listener = tokio::net::TcpListener::bind(address).await?;
         axum::serve(listener, app).await?;

@@ -17,9 +17,14 @@ public square for anyone to read.
 - Root-only OpenAI-compatible routing configuration for `https://openai.ntnl.io/v1`.
   The server encrypts the configured API key with a host-local AES-GCM key; it
   is never returned to the browser.
-- AI tasks for metadata extraction, Markdown summaries, and Markdown-preserving
-  translation. Every result is recorded against the source revision;
-  translation can become a separate draft rather than overwriting the original.
+- Publishing saves the original Markdown immediately, then queues auditable AI
+  metadata extraction and Markdown-preserving translations against that fixed
+  revision. Translations retain Markdown structure, including links, code,
+  GFM, and Mermaid. The public reader follows the UI language (`zh-CN`,
+  `en-US`, `ja-JP`, or `es-ES`) and shows the original with a background-work
+  notice until a requested translation is ready.
+- Root administrators can inspect queued, running, successful, and failed
+  metadata/translation requests at **Administration → AI request audit**.
 
 ## Run locally
 
