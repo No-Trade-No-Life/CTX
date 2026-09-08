@@ -1,26 +1,25 @@
 # CTX
 
-CTX is an AI-native Markdown Context CMS. A Context is a bounded collection of
-Markdown documents, editorial instructions, AI work, and public publishing
-state. Docs and blog documents share one revisioned source model.
+CTX is an AI-native Markdown publishing tool. Every document belongs directly
+to its author, keeps immutable Markdown revisions, and can be published to a
+public square for anyone to read.
 
 ## What ships in v0.1
 
 - Auth Mini sign-in for `auth.ntnl.io` users and a first-user root setup flow.
 - SQLite with WAL mode, foreign keys, a five-second busy timeout, and immutable
   Markdown revisions.
-- Contexts, online Markdown editing, Docs/Blog document types, and explicit
-  publication of the current revision.
-- Public read API at
-  `/api/public/contexts/{context_slug}/documents/{document_slug}` and the
-  matching `#/p/{context_slug}/{document_slug}` reader.
+- Direct document creation and editing for each authenticated user. Saving
+  creates a new revision; publishing fixes the current revision as public.
+- A public square at `#/square`, a public article reader at
+  `#/p/{document_id}`, and public APIs at `/api/public/documents` and
+  `/api/public/documents/{document_id}`.
 - Root-only OpenAI-compatible routing configuration for `https://openai.ntnl.io/v1`.
   The server encrypts the configured API key with a host-local AES-GCM key; it
   is never returned to the browser.
-- CZON-inspired AI tasks: metadata extraction, Markdown summaries, and
-  Markdown-preserving translation. Every result is recorded against the source
-  revision; translation can become a separate draft rather than overwriting
-  the original.
+- AI tasks for metadata extraction, Markdown summaries, and Markdown-preserving
+  translation. Every result is recorded against the source revision;
+  translation can become a separate draft rather than overwriting the original.
 
 ## Run locally
 
@@ -30,10 +29,11 @@ npm --prefix web run build
 cargo run
 ```
 
-Open `http://127.0.0.1:8080`. The first authenticated Auth Mini user chooses
-**Become root administrator**, then configures the OpenAI-LB model and key in
-**Administration**. CTX's local database and encryption key live under
-`~/.ctx/`.
+Open `http://127.0.0.1:8080/#/square` to browse published articles, or open
+`#/documents` to sign in and create a document. The first authenticated Auth
+Mini user chooses **Become root administrator**, then configures the OpenAI-LB
+model and key in **Administration**. CTX's local database and encryption key
+live under `~/.ctx/`.
 
 ## Validation
 

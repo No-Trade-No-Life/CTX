@@ -3,14 +3,15 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install --yes ca-certificates caddy curl
+apt-get install --yes ca-certificates caddy curl sqlite3
 id ctx >/dev/null 2>&1 || useradd --system --home-dir /var/lib/ctx --shell /usr/sbin/nologin ctx
 install -d -m 0755 /opt/ctx/releases
 install -d -o ctx -g ctx -m 0700 /var/lib/ctx
+install -d -o ctx -g ctx -m 0700 /var/lib/ctx/backups
 
 install -m 0644 /dev/stdin /etc/systemd/system/ctx.service <<'UNIT'
 [Unit]
-Description=CTX AI-native Markdown Context CMS
+Description=CTX AI-native Markdown publishing tool
 After=network-online.target
 Wants=network-online.target
 

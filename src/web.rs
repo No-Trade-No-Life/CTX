@@ -16,8 +16,8 @@ use tower_http::trace::TraceLayer;
 use crate::{
     ai::{self, AiTask},
     db::{
-        AiConfiguration, AiRun, Context, Database, DatabaseError, Document, DocumentDetail,
-        DocumentSave, NewDocument,
+        AiConfiguration, AiRun, Database, DatabaseError, Document, DocumentDetail, DocumentSave,
+        NewDocument, PublicDocumentDetail, PublicDocumentSummary,
     },
 };
 
@@ -35,11 +35,7 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
     let private = Router::new()
         .route("/me", get(me))
         .route("/setup", post(setup_root))
-        .route("/contexts", get(list_contexts).post(create_context))
-        .route(
-            "/contexts/{context_id}/documents",
-            get(list_documents).post(create_document),
-        )
+        .route("/documents", get(list_documents).post(create_document))
         .route(
             "/documents/{document_id}",
             get(get_document).put(save_document),
@@ -53,10 +49,8 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         .route_layer(auth);
     Router::new()
         .route("/api/health", get(health))
-        .route(
-            "/api/public/contexts/{context_slug}/documents/{document_slug}",
-            get(public_document),
-        )
+        .route("/api/public/documents", get(list_public_documents))
+        .route("/api/public/documents/{document_id}", get(public_document))
         .nest("/api/v1", private)
         .fallback(static_asset)
         .with_state(state)
@@ -100,57 +94,24 @@ async fn setup_root(
     }))
 }
 
-async fn list_contexts(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
-) -> Result<Json<Vec<Context>>, ApiError> {
-    let actor = Actor::from_principal(&state.database, &principal)?;
-    Ok(Json(state.database.list_contexts(actor.owner_filter())?))
-}
-
-async fn create_context(
-    State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
-    Json(input): Json<ContextInput>,
-) -> Result<(StatusCode, Json<Context>), ApiError> {
-    validate_context_input(&input)?;
-    let context = state.database.create_context(
-        &principal.subject,
-        input.name.trim(),
-        input.slug.trim(),
-        input.description.trim(),
-        input.instructions.trim(),
-        &input.visibility,
-    )?;
-    Ok((StatusCode::CREATED, Json(context)))
-}
-
 async fn list_documents(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthMiniPrincipal>,
-    Path(context_id): Path<String>,
 ) -> Result<Json<Vec<Document>>, ApiError> {
-    require_context_access(&state.database, &principal, &context_id)?;
-    Ok(Json(state.database.list_documents(&context_id)?))
+    Ok(Json(state.database.list_documents(&principal.subject)?))
 }
 
 async fn create_document(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthMiniPrincipal>,
-    Path(context_id): Path<String>,
     Json(input): Json<DocumentInput>,
 ) -> Result<(StatusCode, Json<DocumentDetail>), ApiError> {
-    require_context_access(&state.database, &principal, &context_id)?;
     validate_document_input(&input)?;
     let document = state.database.create_document(&NewDocument {
-        context_id: &context_id,
         author_id: &principal.subject,
         title: input.title.trim(),
-        slug: input.slug.trim(),
-        language: input.language.trim(),
-        kind: &input.kind,
-        content: &input.content,
-        message: "Created in CTX",
+        content: input.content.as_deref().unwrap_or_default(),
+        message: "Created document",
     })?;
     Ok((StatusCode::CREATED, Json(document)))
 }
@@ -160,12 +121,11 @@ async fn get_document(
     Extension(principal): Extension<AuthMiniPrincipal>,
     Path(document_id): Path<String>,
 ) -> Result<Json<DocumentDetail>, ApiError> {
-    let document = state
-        .database
-        .get_document(&document_id)?
-        .ok_or_else(ApiError::not_found)?;
-    require_context_access(&state.database, &principal, &document.document.context_id)?;
-    Ok(Json(document))
+    Ok(Json(require_document_owner(
+        &state.database,
+        &principal,
+        &document_id,
+    )?))
 }
 
 async fn save_document(
@@ -175,20 +135,15 @@ async fn save_document(
     Json(input): Json<DocumentUpdateInput>,
 ) -> Result<Json<DocumentDetail>, ApiError> {
     validate_document_update(&input)?;
-    let existing = state
-        .database
-        .get_document(&document_id)?
-        .ok_or_else(ApiError::not_found)?;
-    require_context_access(&state.database, &principal, &existing.document.context_id)?;
+    let existing = require_document_owner(&state.database, &principal, &document_id)?;
     let document = state
         .database
         .save_document(&DocumentSave {
             id: &document_id,
             author_id: &principal.subject,
             title: input.title.trim(),
-            slug: input.slug.trim(),
             content: &input.content,
-            message: input.message.as_deref().unwrap_or("Saved in CTX"),
+            message: input.message.as_deref().unwrap_or("Saved document"),
             metadata: input
                 .metadata
                 .as_ref()
@@ -203,11 +158,7 @@ async fn publish_document(
     Extension(principal): Extension<AuthMiniPrincipal>,
     Path(document_id): Path<String>,
 ) -> Result<Json<Document>, ApiError> {
-    let existing = state
-        .database
-        .get_document(&document_id)?
-        .ok_or_else(ApiError::not_found)?;
-    require_context_access(&state.database, &principal, &existing.document.context_id)?;
+    require_document_owner(&state.database, &principal, &document_id)?;
     Ok(Json(
         state
             .database
@@ -222,12 +173,7 @@ async fn run_ai_task(
     Path(document_id): Path<String>,
     Json(input): Json<AiTaskInput>,
 ) -> Result<Json<AiRun>, ApiError> {
-    let document = state
-        .database
-        .get_document(&document_id)?
-        .ok_or_else(ApiError::not_found)?;
-    let context =
-        require_context_access(&state.database, &principal, &document.document.context_id)?;
+    let document = require_document_owner(&state.database, &principal, &document_id)?;
     let credentials = state
         .database
         .ai_credentials()?
@@ -241,14 +187,12 @@ async fn run_ai_task(
     }
     let output = ai::run(
         &credentials,
-        &context,
         &document,
         input.task.clone(),
         input.target_language.as_deref(),
     )
     .await?;
     Ok(Json(state.database.record_ai_run(
-        &context.id,
         &document.document.id,
         &document.revision.id,
         input.task.as_str(),
@@ -284,20 +228,29 @@ async fn update_ai_configuration(
     )?))
 }
 
+async fn list_public_documents(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<PublicDocumentSummary>>, ApiError> {
+    Ok(Json(state.database.public_documents()?))
+}
+
 async fn public_document(
     State(state): State<AppState>,
-    Path((context_slug, document_slug)): Path<(String, String)>,
-) -> Result<Json<DocumentDetail>, ApiError> {
+    Path(document_id): Path<String>,
+) -> Result<Json<PublicDocumentDetail>, ApiError> {
     Ok(Json(
         state
             .database
-            .public_document(&context_slug, &document_slug)?
+            .public_document(&document_id)?
             .ok_or_else(ApiError::not_found)?,
     ))
 }
 
 async fn static_asset(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
+    if path.starts_with("api/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let asset = WebAssets::get(path).or_else(|| WebAssets::get("index.html"));
     let Some(asset) = asset else {
         return StatusCode::NOT_FOUND.into_response();
@@ -316,27 +269,14 @@ async fn static_asset(uri: Uri) -> Response {
 }
 
 #[derive(Debug, Deserialize)]
-struct ContextInput {
-    name: String,
-    slug: String,
-    description: String,
-    instructions: String,
-    visibility: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct DocumentInput {
     title: String,
-    slug: String,
-    language: String,
-    kind: String,
-    content: String,
+    content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct DocumentUpdateInput {
     title: String,
-    slug: String,
     content: String,
     message: Option<String>,
     metadata: Option<Value>,
@@ -364,7 +304,6 @@ struct Me {
 
 #[derive(Debug)]
 struct Actor {
-    user_id: String,
     is_root: bool,
 }
 
@@ -374,13 +313,8 @@ impl Actor {
         principal: &AuthMiniPrincipal,
     ) -> Result<Self, ApiError> {
         Ok(Self {
-            user_id: principal.subject.clone(),
             is_root: database.root_user_id()?.as_deref() == Some(&principal.subject),
         })
-    }
-
-    fn owner_filter(&self) -> Option<&str> {
-        (!self.is_root).then_some(self.user_id.as_str())
     }
 
     fn assert_root(&self) -> Result<(), ApiError> {
@@ -390,54 +324,28 @@ impl Actor {
             Err(ApiError::forbidden("root user is required"))
         }
     }
-
-    fn assert_context_access(&self, context: &Context) -> Result<(), ApiError> {
-        if self.is_root || self.user_id == context.owner_id {
-            Ok(())
-        } else {
-            Err(ApiError::forbidden(
-                "you do not have access to this Context",
-            ))
-        }
-    }
 }
 
-fn require_context_access(
+fn require_document_owner(
     database: &Database,
     principal: &AuthMiniPrincipal,
-    context_id: &str,
-) -> Result<Context, ApiError> {
-    let actor = Actor::from_principal(database, principal)?;
-    let context = database
-        .get_context(context_id)?
+    document_id: &str,
+) -> Result<DocumentDetail, ApiError> {
+    let document = database
+        .get_document(document_id)?
         .ok_or_else(ApiError::not_found)?;
-    actor.assert_context_access(&context)?;
-    Ok(context)
-}
-
-fn validate_context_input(input: &ContextInput) -> Result<(), ApiError> {
-    if input.name.trim().is_empty() {
-        return Err(ApiError::bad_request("Context name is required"));
+    if document.document.owner_id == principal.subject {
+        Ok(document)
+    } else {
+        Err(ApiError::forbidden(
+            "you do not have access to this document",
+        ))
     }
-    validate_slug(&input.slug)?;
-    if !matches!(input.visibility.as_str(), "private" | "public") {
-        return Err(ApiError::bad_request(
-            "visibility must be private or public",
-        ));
-    }
-    Ok(())
 }
 
 fn validate_document_input(input: &DocumentInput) -> Result<(), ApiError> {
     if input.title.trim().is_empty() {
         return Err(ApiError::bad_request("document title is required"));
-    }
-    validate_slug(&input.slug)?;
-    if input.language.trim().is_empty() {
-        return Err(ApiError::bad_request("document language is required"));
-    }
-    if !matches!(input.kind.as_str(), "docs" | "blog") {
-        return Err(ApiError::bad_request("document kind must be docs or blog"));
     }
     Ok(())
 }
@@ -446,22 +354,7 @@ fn validate_document_update(input: &DocumentUpdateInput) -> Result<(), ApiError>
     if input.title.trim().is_empty() {
         return Err(ApiError::bad_request("document title is required"));
     }
-    validate_slug(&input.slug)
-}
-
-fn validate_slug(slug: &str) -> Result<(), ApiError> {
-    let valid = !slug.is_empty()
-        && slug.len() <= 80
-        && slug.bytes().all(|character| {
-            character.is_ascii_lowercase() || character.is_ascii_digit() || character == b'-'
-        });
-    if valid {
-        Ok(())
-    } else {
-        Err(ApiError::bad_request(
-            "slug must use lowercase letters, numbers, and hyphens",
-        ))
-    }
+    Ok(())
 }
 
 #[derive(Debug, Error)]
