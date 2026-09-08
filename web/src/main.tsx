@@ -23,7 +23,17 @@ function RouteBoundary() {
     location.pathname.startsWith("/square") ||
     location.pathname.startsWith("/p/")
   )
-    return <PublicApp />
+    return (
+      <AuthMiniProvider
+        authMiniBaseUrl="https://auth.ntnl.io"
+        audiences={["ctx.ntnl.io", "linkit.ntnl.io"]}
+        autoRedirectToLogin={false}
+      >
+        <LinkitProvider lang={locale} linkitBaseUrl="https://linkit.ntnl.io">
+          <PublicApp />
+        </LinkitProvider>
+      </AuthMiniProvider>
+    )
 
   return (
     <AuthMiniProvider

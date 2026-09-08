@@ -22,6 +22,8 @@ const CURRENT_TABLES_SQL: &str = "
         published_revision_id TEXT,
         published_title TEXT,
         published_at INTEGER,
+        source_language TEXT NOT NULL DEFAULT 'und',
+        published_source_language TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
     );
@@ -42,6 +44,20 @@ const CURRENT_TABLES_SQL: &str = "
         proposed_content TEXT,
         created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS author_language_preferences (
+        owner_id TEXT PRIMARY KEY NOT NULL,
+        languages_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS document_translations (
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        language TEXT NOT NULL,
+        source_revision_id TEXT NOT NULL REFERENCES document_revisions(id),
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        published_at INTEGER NOT NULL,
+        PRIMARY KEY(document_id, language)
+    );
 ";
 
 const CURRENT_INDEXES_SQL: &str = "
@@ -49,6 +65,7 @@ const CURRENT_INDEXES_SQL: &str = "
     CREATE INDEX IF NOT EXISTS documents_public_idx ON documents(visibility, status, published_at DESC);
     CREATE INDEX IF NOT EXISTS document_revisions_document_idx ON document_revisions(document_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS ai_runs_document_idx ON ai_runs(document_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS document_translations_document_idx ON document_translations(document_id, language);
 ";
 
 #[derive(Clone)]
@@ -83,12 +100,14 @@ pub struct Document {
     pub id: String,
     pub owner_id: String,
     pub title: String,
+    pub source_language: String,
     pub status: String,
     #[serde(skip_serializing)]
     pub visibility: String,
     pub metadata: Value,
     pub current_revision_id: String,
     pub published_revision_id: Option<String>,
+    pub published_source_language: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -112,6 +131,7 @@ pub struct DocumentDetail {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PublicDocumentSummary {
     pub id: String,
+    pub owner_id: String,
     pub title: String,
     pub published_at: i64,
 }
@@ -119,9 +139,25 @@ pub struct PublicDocumentSummary {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PublicDocumentDetail {
     pub id: String,
+    pub owner_id: String,
     pub title: String,
     pub content: String,
+    pub source_language: String,
+    pub language: String,
+    pub available_languages: Vec<String>,
     pub published_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LanguagePreferences {
+    pub languages: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PublishedTranslation {
+    pub language: String,
+    pub title: String,
+    pub content: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -153,6 +189,7 @@ pub struct AiRun {
 pub struct NewDocument<'a> {
     pub author_id: &'a str,
     pub title: &'a str,
+    pub source_language: &'a str,
     pub content: &'a str,
     pub message: &'a str,
 }
@@ -162,6 +199,7 @@ pub struct DocumentSave<'a> {
     pub id: &'a str,
     pub author_id: &'a str,
     pub title: &'a str,
+    pub source_language: &'a str,
     pub content: &'a str,
     pub message: &'a str,
     pub metadata: &'a Value,
@@ -188,6 +226,7 @@ impl Database {
         add_direct_document_columns_if_needed(&connection)?;
         connection.execute_batch(CURRENT_TABLES_SQL)?;
         connection.execute_batch(CURRENT_INDEXES_SQL)?;
+        backfill_published_source_languages(&connection)?;
         connection.execute(
             "INSERT INTO app_meta(key, value) VALUES ('ai_base_url', 'https://openai.ntnl.io/v1') ON CONFLICT(key) DO NOTHING",
             [],
@@ -278,19 +317,21 @@ impl Database {
             id: document_id,
             owner_id: input.author_id.to_owned(),
             title: input.title.to_owned(),
+            source_language: input.source_language.to_owned(),
             status: "draft".to_owned(),
             visibility: "private".to_owned(),
             metadata: Value::Object(Default::default()),
             current_revision_id: revision.id.clone(),
             published_revision_id: None,
+            published_source_language: None,
             created_at: revision.created_at,
             updated_at: revision.created_at,
         };
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         transaction.execute(
-            "INSERT INTO documents(id, owner_id, title, status, visibility, metadata_json, current_revision_id, published_revision_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)",
-            params![document.id, document.owner_id, document.title, document.status, document.visibility, document.metadata.to_string(), document.current_revision_id, document.created_at, document.updated_at],
+            "INSERT INTO documents(id, owner_id, title, source_language, status, visibility, metadata_json, current_revision_id, published_revision_id, published_source_language, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9, ?10)",
+            params![document.id, document.owner_id, document.title, document.source_language, document.status, document.visibility, document.metadata.to_string(), document.current_revision_id, document.created_at, document.updated_at],
         )?;
         transaction.execute(
             "INSERT INTO document_revisions(id, document_id, content, message, author_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -303,7 +344,7 @@ impl Database {
     pub fn list_documents(&self, owner_id: &str) -> Result<Vec<Document>, DatabaseError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT id, owner_id, title, status, visibility, metadata_json, current_revision_id, published_revision_id, created_at, updated_at FROM documents WHERE owner_id = ?1 ORDER BY updated_at DESC, id DESC",
+            "SELECT id, owner_id, title, source_language, status, visibility, metadata_json, current_revision_id, published_revision_id, published_source_language, created_at, updated_at FROM documents WHERE owner_id = ?1 ORDER BY updated_at DESC, id DESC",
         )?;
         Ok(statement
             .query_map([owner_id], document_from_row)?
@@ -314,7 +355,7 @@ impl Database {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT d.id, d.owner_id, d.title, d.status, d.visibility, d.metadata_json, d.current_revision_id, d.published_revision_id, d.created_at, d.updated_at, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id AND r.document_id = d.id WHERE d.id = ?1",
+                "SELECT d.id, d.owner_id, d.title, d.source_language, d.status, d.visibility, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id AND r.document_id = d.id WHERE d.id = ?1",
                 [id],
                 document_detail_from_row,
             )
@@ -344,12 +385,13 @@ impl Database {
             params![revision.id, revision.document_id, revision.content, revision.message, revision.author_id, revision.created_at],
         )?;
         transaction.execute(
-            "UPDATE documents SET title = ?2, metadata_json = ?3, current_revision_id = ?4, updated_at = ?5 WHERE id = ?1",
-            params![input.id, input.title, input.metadata.to_string(), revision.id, revision.created_at],
+            "UPDATE documents SET title = ?2, source_language = ?3, metadata_json = ?4, current_revision_id = ?5, updated_at = ?6 WHERE id = ?1",
+            params![input.id, input.title, input.source_language, input.metadata.to_string(), revision.id, revision.created_at],
         )?;
         transaction.commit()?;
         let document = Document {
             title: input.title.to_owned(),
+            source_language: input.source_language.to_owned(),
             metadata: input.metadata.clone(),
             current_revision_id: revision.id.clone(),
             updated_at: revision.created_at,
@@ -358,41 +400,134 @@ impl Database {
         Ok(Some(DocumentDetail { document, revision }))
     }
 
-    pub fn publish_document(&self, id: &str) -> Result<Option<Document>, DatabaseError> {
+    pub fn publish_document(
+        &self,
+        id: &str,
+        source_revision_id: &str,
+        source_language: &str,
+        translations: &[PublishedTranslation],
+    ) -> Result<Option<Document>, DatabaseError> {
         let Some(mut detail) = self.get_document(id)? else {
             return Ok(None);
         };
         let updated_at = now();
-        self.connection()?.execute(
-            "UPDATE documents SET status = 'published', visibility = 'public', published_revision_id = current_revision_id, published_title = title, published_at = ?2, updated_at = ?2 WHERE id = ?1",
-            params![id, updated_at],
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let updated = transaction.execute(
+            "UPDATE documents SET status = 'published', visibility = 'public', published_revision_id = ?2, published_title = title, published_at = ?3, source_language = ?4, published_source_language = ?4, updated_at = ?3 WHERE id = ?1 AND current_revision_id = ?2",
+            params![id, source_revision_id, updated_at, source_language],
         )?;
+        if updated == 0 {
+            return Ok(None);
+        }
+        transaction.execute(
+            "DELETE FROM document_translations WHERE document_id = ?1",
+            [id],
+        )?;
+        for translation in translations {
+            transaction.execute(
+                "INSERT INTO document_translations(document_id, language, source_revision_id, title, content, published_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, translation.language, source_revision_id, translation.title, translation.content, updated_at],
+            )?;
+        }
+        transaction.commit()?;
         detail.document.status = "published".to_owned();
         detail.document.visibility = "public".to_owned();
-        detail.document.published_revision_id = Some(detail.document.current_revision_id.clone());
+        detail.document.source_language = source_language.to_owned();
+        detail.document.published_revision_id = Some(source_revision_id.to_owned());
+        detail.document.published_source_language = Some(source_language.to_owned());
         detail.document.updated_at = updated_at;
         Ok(Some(detail.document))
+    }
+
+    pub fn language_preferences(
+        &self,
+        owner_id: &str,
+    ) -> Result<LanguagePreferences, DatabaseError> {
+        let languages_json: Option<String> = self
+            .connection()?
+            .query_row(
+                "SELECT languages_json FROM author_language_preferences WHERE owner_id = ?1",
+                [owner_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let languages = languages_json
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(LanguagePreferences { languages })
+    }
+
+    pub fn update_language_preferences(
+        &self,
+        owner_id: &str,
+        languages: &[String],
+    ) -> Result<LanguagePreferences, DatabaseError> {
+        let preferences = LanguagePreferences {
+            languages: languages.to_vec(),
+        };
+        self.connection()?.execute(
+            "INSERT INTO author_language_preferences(owner_id, languages_json, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(owner_id) DO UPDATE SET languages_json = excluded.languages_json, updated_at = excluded.updated_at",
+            params![owner_id, serde_json::to_string(&preferences.languages)?, now()],
+        )?;
+        Ok(preferences)
     }
 
     pub fn public_documents(&self) -> Result<Vec<PublicDocumentSummary>, DatabaseError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT d.id, d.published_title, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL ORDER BY d.published_at DESC, d.id DESC",
+            "SELECT d.id, d.owner_id, d.published_title, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL AND d.published_source_language IS NOT NULL ORDER BY d.published_at DESC, d.id DESC",
         )?;
         Ok(statement
             .query_map([], public_document_summary_from_row)?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn public_document(&self, id: &str) -> Result<Option<PublicDocumentDetail>, DatabaseError> {
-        self.connection()?
+    pub fn public_document(
+        &self,
+        id: &str,
+        requested_language: Option<&str>,
+    ) -> Result<Option<PublicDocumentDetail>, DatabaseError> {
+        let connection = self.connection()?;
+        let Some(mut document) = connection
             .query_row(
-                "SELECT d.id, d.published_title, r.content, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.id = ?1 AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL",
+                "SELECT d.id, d.owner_id, d.published_title, r.content, d.published_source_language, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.id = ?1 AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL AND d.published_source_language IS NOT NULL",
                 [id],
                 public_document_detail_from_row,
             )
-            .optional()
-            .map_err(DatabaseError::Sqlite)
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let mut statement = connection.prepare(
+            "SELECT language FROM document_translations WHERE document_id = ?1 ORDER BY language",
+        )?;
+        let translation_languages = statement
+            .query_map([id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        document.available_languages.extend(translation_languages);
+
+        let Some(language) = requested_language else {
+            return Ok(Some(document));
+        };
+        if language == document.source_language {
+            return Ok(Some(document));
+        }
+        let Some((title, content)) = connection
+            .query_row(
+                "SELECT title, content FROM document_translations WHERE document_id = ?1 AND language = ?2",
+                params![id, language],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        document.title = title;
+        document.content = content;
+        document.language = language.to_owned();
+        Ok(Some(document))
     }
 
     pub fn record_ai_run(
@@ -559,6 +694,8 @@ fn add_direct_document_columns_if_needed(connection: &Connection) -> Result<(), 
         ("visibility", "TEXT NOT NULL DEFAULT 'private'"),
         ("published_title", "TEXT"),
         ("published_at", "INTEGER"),
+        ("source_language", "TEXT NOT NULL DEFAULT 'und'"),
+        ("published_source_language", "TEXT"),
     ] {
         if !table_has_column(connection, "documents", column)? {
             connection.execute(
@@ -567,6 +704,18 @@ fn add_direct_document_columns_if_needed(connection: &Connection) -> Result<(), 
             )?;
         }
     }
+    Ok(())
+}
+
+fn backfill_published_source_languages(connection: &Connection) -> Result<(), DatabaseError> {
+    // COMPATIBILITY: direct-document releases before v0.1.0-7 had immutable content snapshots
+    // but no immutable source-language snapshot. Existing published rows receive `und` instead
+    // of a guessed language. Remove after every supported database has these columns populated;
+    // verify with this query returning zero rows before removal.
+    connection.execute(
+        "UPDATE documents SET published_source_language = source_language WHERE published_revision_id IS NOT NULL AND published_source_language IS NULL",
+        [],
+    )?;
     Ok(())
 }
 
@@ -687,18 +836,20 @@ fn verify_connection_foreign_keys(connection: &Connection) -> Result<(), Databas
 }
 
 fn document_from_row(row: &Row<'_>) -> rusqlite::Result<Document> {
-    let metadata: String = row.get(5)?;
+    let metadata: String = row.get(6)?;
     Ok(Document {
         id: row.get(0)?,
         owner_id: row.get(1)?,
         title: row.get(2)?,
-        status: row.get(3)?,
-        visibility: row.get(4)?,
+        source_language: row.get(3)?,
+        status: row.get(4)?,
+        visibility: row.get(5)?,
         metadata: serde_json::from_str(&metadata).unwrap_or(Value::Object(Default::default())),
-        current_revision_id: row.get(6)?,
-        published_revision_id: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
+        current_revision_id: row.get(7)?,
+        published_revision_id: row.get(8)?,
+        published_source_language: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -707,12 +858,12 @@ fn document_detail_from_row(row: &Row<'_>) -> rusqlite::Result<DocumentDetail> {
     Ok(DocumentDetail {
         document,
         revision: DocumentRevision {
-            id: row.get(10)?,
-            document_id: row.get(11)?,
-            content: row.get(12)?,
-            message: row.get(13)?,
-            author_id: row.get(14)?,
-            created_at: row.get(15)?,
+            id: row.get(12)?,
+            document_id: row.get(13)?,
+            content: row.get(14)?,
+            message: row.get(15)?,
+            author_id: row.get(16)?,
+            created_at: row.get(17)?,
         },
     })
 }
@@ -720,17 +871,22 @@ fn document_detail_from_row(row: &Row<'_>) -> rusqlite::Result<DocumentDetail> {
 fn public_document_summary_from_row(row: &Row<'_>) -> rusqlite::Result<PublicDocumentSummary> {
     Ok(PublicDocumentSummary {
         id: row.get(0)?,
-        title: row.get(1)?,
-        published_at: row.get(2)?,
+        owner_id: row.get(1)?,
+        title: row.get(2)?,
+        published_at: row.get(3)?,
     })
 }
 
 fn public_document_detail_from_row(row: &Row<'_>) -> rusqlite::Result<PublicDocumentDetail> {
     Ok(PublicDocumentDetail {
         id: row.get(0)?,
-        title: row.get(1)?,
-        content: row.get(2)?,
-        published_at: row.get(3)?,
+        owner_id: row.get(1)?,
+        title: row.get(2)?,
+        content: row.get(3)?,
+        source_language: row.get(4)?,
+        language: row.get(4)?,
+        available_languages: vec![row.get(4)?],
+        published_at: row.get(5)?,
     })
 }
 
@@ -743,7 +899,7 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::json;
 
-    use super::{Database, DocumentSave, NewDocument};
+    use super::{Database, DocumentSave, NewDocument, PublishedTranslation};
 
     #[test]
     fn documents_belong_to_their_owner_and_keep_published_revisions_immutable() {
@@ -760,6 +916,7 @@ mod tests {
             .create_document(&NewDocument {
                 author_id: "author-a",
                 title: "First note",
+                source_language: "zh-CN",
                 content: "# First note",
                 message: "Created document",
             })
@@ -773,6 +930,7 @@ mod tests {
                 id: &created.document.id,
                 author_id: "author-a",
                 title: "Published note",
+                source_language: "zh-CN",
                 content: "# Published note",
                 message: "Ready to publish",
                 metadata: &metadata,
@@ -780,7 +938,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let published = database
-            .publish_document(&created.document.id)
+            .publish_document(&created.document.id, &saved.revision.id, "zh-CN", &[])
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -794,6 +952,7 @@ mod tests {
                 id: &created.document.id,
                 author_id: "author-a",
                 title: "Later draft",
+                source_language: "en-US",
                 content: "# Later draft",
                 message: "Continue editing",
                 metadata: &later_metadata,
@@ -801,12 +960,350 @@ mod tests {
             .unwrap();
 
         let public = database
-            .public_document(&created.document.id)
+            .public_document(&created.document.id, None)
             .unwrap()
             .unwrap();
         assert_eq!(public.title, "Published note");
         assert_eq!(public.content, "# Published note");
+        assert_eq!(public.source_language, "zh-CN");
+        assert_eq!(public.language, "zh-CN");
+        assert_eq!(public.available_languages, vec!["zh-CN"]);
+        assert_eq!(
+            database
+                .get_document(&created.document.id)
+                .unwrap()
+                .unwrap()
+                .document
+                .source_language,
+            "en-US"
+        );
         assert_eq!(database.public_documents().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn publishing_replaces_the_full_language_matrix_from_one_source_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let created = database
+            .create_document(&NewDocument {
+                author_id: "author-a",
+                title: "Original",
+                source_language: "zh-CN",
+                content: "# 原文\n\n- [x] 已完成",
+                message: "Created document",
+            })
+            .unwrap();
+        let source = database
+            .save_document(&DocumentSave {
+                id: &created.document.id,
+                author_id: "author-a",
+                title: "Original",
+                source_language: "zh-CN",
+                content: "# 原文\n\n- [x] 已完成",
+                message: "Ready to publish",
+                metadata: &json!({}),
+            })
+            .unwrap()
+            .unwrap();
+        let preferences = vec![
+            "zh-CN".to_owned(),
+            "en-US".to_owned(),
+            "ja-JP".to_owned(),
+            "es-ES".to_owned(),
+        ];
+        database
+            .update_language_preferences("author-a", &preferences)
+            .unwrap();
+        assert_eq!(
+            database.language_preferences("author-b").unwrap().languages,
+            Vec::<String>::new()
+        );
+
+        let translations = vec![
+            PublishedTranslation {
+                language: "en-US".to_owned(),
+                title: "Original".to_owned(),
+                content: "# Original\n\n- [x] Done".to_owned(),
+            },
+            PublishedTranslation {
+                language: "ja-JP".to_owned(),
+                title: "原文".to_owned(),
+                content: "# 原文\n\n- [x] 完了".to_owned(),
+            },
+            PublishedTranslation {
+                language: "es-ES".to_owned(),
+                title: "Original".to_owned(),
+                content: "# Original\n\n- [x] Hecho".to_owned(),
+            },
+        ];
+        let published = database
+            .publish_document(
+                &created.document.id,
+                &source.revision.id,
+                "zh-CN",
+                &translations,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            published.published_revision_id.as_deref(),
+            Some(source.revision.id.as_str())
+        );
+        assert_eq!(
+            published.published_source_language.as_deref(),
+            Some("zh-CN")
+        );
+
+        let source_public = database
+            .public_document(&created.document.id, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source_public.owner_id, "author-a");
+        assert_eq!(source_public.language, "zh-CN");
+        assert_eq!(
+            source_public.available_languages,
+            vec!["zh-CN", "en-US", "es-ES", "ja-JP"]
+        );
+        let english_public = database
+            .public_document(&created.document.id, Some("en-US"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(english_public.language, "en-US");
+        assert_eq!(english_public.content, "# Original\n\n- [x] Done");
+        assert!(
+            database
+                .public_document(&created.document.id, Some("fr-FR"))
+                .unwrap()
+                .is_none()
+        );
+
+        let next = database
+            .save_document(&DocumentSave {
+                id: &created.document.id,
+                author_id: "author-a",
+                title: "Updated original",
+                source_language: "en-US",
+                content: "# Updated original",
+                message: "New source",
+                metadata: &json!({}),
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            database
+                .public_document(&created.document.id, None)
+                .unwrap()
+                .unwrap()
+                .source_language,
+            "zh-CN"
+        );
+
+        let replacement = vec![PublishedTranslation {
+            language: "zh-CN".to_owned(),
+            title: "更新的原文".to_owned(),
+            content: "# 更新的原文".to_owned(),
+        }];
+        database
+            .publish_document(
+                &created.document.id,
+                &next.revision.id,
+                "en-US",
+                &replacement,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            database
+                .public_document(&created.document.id, Some("ja-JP"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            database
+                .public_document(&created.document.id, Some("zh-CN"))
+                .unwrap()
+                .unwrap()
+                .title,
+            "更新的原文"
+        );
+    }
+
+    #[test]
+    fn publication_rejects_a_source_revision_that_changed_while_translating() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let created = database
+            .create_document(&NewDocument {
+                author_id: "author-a",
+                title: "Original",
+                source_language: "en-US",
+                content: "# Original",
+                message: "Created document",
+            })
+            .unwrap();
+        let source = database
+            .save_document(&DocumentSave {
+                id: &created.document.id,
+                author_id: "author-a",
+                title: "Original",
+                source_language: "en-US",
+                content: "# Original",
+                message: "Source for translation",
+                metadata: &json!({}),
+            })
+            .unwrap()
+            .unwrap();
+        database
+            .save_document(&DocumentSave {
+                id: &created.document.id,
+                author_id: "author-a",
+                title: "Changed while translating",
+                source_language: "en-US",
+                content: "# Changed",
+                message: "New revision",
+                metadata: &json!({}),
+            })
+            .unwrap();
+        assert!(
+            database
+                .publish_document(&created.document.id, &source.revision.id, "en-US", &[])
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            database
+                .public_document(&created.document.id, None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn direct_document_migration_adds_language_snapshots_without_guessing_old_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("ctx.sqlite3");
+        let legacy = Connection::open(&database_path).unwrap();
+        legacy
+            .execute_batch(
+                "
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE documents (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    visibility TEXT NOT NULL DEFAULT 'private',
+                    metadata_json TEXT NOT NULL,
+                    current_revision_id TEXT NOT NULL,
+                    published_revision_id TEXT,
+                    published_title TEXT,
+                    published_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE document_revisions (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    author_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE ai_runs (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    source_revision_id TEXT NOT NULL REFERENCES document_revisions(id),
+                    task TEXT NOT NULL,
+                    output TEXT NOT NULL,
+                    proposed_content TEXT,
+                    created_at INTEGER NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO documents(id, owner_id, title, status, visibility, metadata_json, current_revision_id, published_revision_id, published_title, published_at, created_at, updated_at) VALUES ('published', 'author-a', 'Current draft title', 'published', 'public', '{\"topic\":\"migration\"}', 'published-draft', 'published-source', 'Published title', 10, 1, 11), ('draft', 'author-b', 'Draft title', 'draft', 'private', '{}', 'draft-source', NULL, NULL, NULL, 2, 2)",
+                [],
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO document_revisions(id, document_id, content, message, author_id, created_at) VALUES ('published-source', 'published', '# Published', 'Published', 'author-a', 10), ('published-draft', 'published', '# Draft', 'Saved', 'author-a', 11), ('draft-source', 'draft', '# Draft', 'Created', 'author-b', 2)",
+                [],
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO ai_runs(id, document_id, source_revision_id, task, output, proposed_content, created_at) VALUES ('run-1', 'published', 'published-source', 'summary', 'Summary', NULL, 11)",
+                [],
+            )
+            .unwrap();
+        drop(legacy);
+
+        let database = Database::open(directory.path()).unwrap();
+        let published = database
+            .get_document("published")
+            .unwrap()
+            .unwrap()
+            .document;
+        let draft = database.get_document("draft").unwrap().unwrap().document;
+        assert_eq!(published.source_language, "und");
+        assert_eq!(published.published_source_language.as_deref(), Some("und"));
+        assert_eq!(draft.source_language, "und");
+        assert!(draft.published_source_language.is_none());
+        let public = database
+            .public_document("published", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(public.title, "Published title");
+        assert_eq!(public.content, "# Published");
+        assert_eq!(public.source_language, "und");
+        assert!(
+            database
+                .language_preferences("author-a")
+                .unwrap()
+                .languages
+                .is_empty()
+        );
+        let connection = database.connection().unwrap();
+        let translation_table_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_translations')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(translation_table_exists);
+        let ai_run_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM ai_runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(ai_run_count, 1);
+        let mut foreign_key_check = connection.prepare("PRAGMA foreign_key_check").unwrap();
+        assert!(
+            foreign_key_check
+                .query([])
+                .unwrap()
+                .next()
+                .unwrap()
+                .is_none()
+        );
+        drop(foreign_key_check);
+        drop(connection);
+        drop(database);
+
+        let reopened = Database::open(directory.path()).unwrap();
+        assert_eq!(
+            reopened
+                .get_document("published")
+                .unwrap()
+                .unwrap()
+                .document
+                .published_source_language
+                .as_deref(),
+            Some("und")
+        );
+        assert_eq!(reopened.public_documents().unwrap().len(), 1);
     }
 
     #[test]
@@ -921,12 +1418,12 @@ mod tests {
         }));
         assert!(
             database
-                .public_document("private-document")
+                .public_document("private-document", None)
                 .unwrap()
                 .is_none()
         );
         let changed_public_document = database
-            .public_document("changed-document")
+            .public_document("changed-document", None)
             .unwrap()
             .unwrap();
         assert_eq!(changed_public_document.title, "Published document");
@@ -949,13 +1446,24 @@ mod tests {
             .document;
         let connection = database.connection().unwrap();
         assert_eq!(public_document.status, "published");
+        assert_eq!(public_document.source_language, "und");
+        assert_eq!(
+            public_document.published_source_language.as_deref(),
+            Some("und")
+        );
         assert_eq!(
             public_document.published_revision_id.as_deref(),
             Some("public-revision")
         );
         assert_eq!(private_document.status, "draft");
+        assert_eq!(private_document.source_language, "und");
+        assert!(private_document.published_source_language.is_none());
         assert!(private_document.published_revision_id.is_none());
         assert_eq!(changed_document.status, "published");
+        assert_eq!(
+            changed_document.published_source_language.as_deref(),
+            Some("und")
+        );
         assert_eq!(
             changed_document.published_revision_id.as_deref(),
             Some("changed-published-revision")
