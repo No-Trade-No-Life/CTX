@@ -78,12 +78,7 @@ pub async fn run(
     let response = reqwest::Client::new()
         .post(endpoint)
         .bearer_auth(&credentials.api_key)
-        .json(&json!({
-            "model": credentials.model,
-            "temperature": 0.2,
-            "instructions": system,
-            "input": content
-        }))
+        .json(&request_body(&credentials.model, &system, &content))
         .send()
         .await?;
     if !response.status().is_success() {
@@ -95,6 +90,20 @@ pub async fn run(
     Ok(AiOutput {
         output,
         proposed_content,
+    })
+}
+
+fn request_body(model: &str, instructions: &str, input: &str) -> serde_json::Value {
+    json!({
+        "model": model,
+        "instructions": instructions,
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": input
+            }]
+        }]
     })
 }
 
@@ -122,7 +131,25 @@ fn system_prompt(task: &AiTask, target_language: Option<&str>) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{ResponsesResponse, output_text};
+    use super::{ResponsesResponse, output_text, request_body};
+
+    #[test]
+    fn sends_responses_input_as_message_items() {
+        assert_eq!(
+            request_body("gpt-5.6-luna", "follow the context", "# Document"),
+            json!({
+                "model": "gpt-5.6-luna",
+                "instructions": "follow the context",
+                "input": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "input_text",
+                        "text": "# Document"
+                    }]
+                }]
+            })
+        );
+    }
 
     #[test]
     fn extracts_output_text_from_response_messages_in_order() {
