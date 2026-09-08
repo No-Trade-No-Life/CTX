@@ -3,7 +3,7 @@ name = "ctx"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "AI-native Markdown Context CMS"
+description = "AI-native Markdown publishing tool"
 repository = "https://github.com/No-Trade-No-Life/CTX"
 
 [dependencies]

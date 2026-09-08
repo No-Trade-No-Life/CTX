@@ -4,26 +4,10 @@ export type Me = {
   setup_required: boolean
 }
 
-export type Context = {
-  id: string
-  owner_id: string
-  name: string
-  slug: string
-  description: string
-  instructions: string
-  visibility: "private" | "public"
-  document_count: number
-  created_at: number
-  updated_at: number
-}
-
 export type Document = {
   id: string
-  context_id: string
+  owner_id: string
   title: string
-  slug: string
-  language: string
-  kind: "docs" | "blog"
   status: "draft" | "published"
   metadata: Record<string, unknown>
   current_revision_id: string
@@ -32,16 +16,31 @@ export type Document = {
   updated_at: number
 }
 
+export type DocumentRevision = {
+  id: string
+  document_id: string
+  content: string
+  message: string
+  author_id: string
+  created_at: number
+}
+
 export type DocumentDetail = {
   document: Document
-  revision: {
-    id: string
-    document_id: string
-    content: string
-    message: string
-    author_id: string
-    created_at: number
-  }
+  revision: DocumentRevision
+}
+
+export type PublicDocument = {
+  id: string
+  title: string
+  published_at: number
+}
+
+export type PublicDocumentDetail = {
+  id: string
+  title: string
+  content: string
+  published_at: number
 }
 
 export type AiConfiguration = {
@@ -52,7 +51,6 @@ export type AiConfiguration = {
 
 export type AiRun = {
   id: string
-  context_id: string
   document_id: string
   source_revision_id: string
   task: "metadata" | "summary" | "translate"

@@ -18,7 +18,12 @@ function RouteBoundary() {
   const location = useLocation()
   const { locale } = useI18n()
 
-  if (location.pathname.startsWith("/p/")) return <PublicApp />
+  if (
+    location.pathname === "/" ||
+    location.pathname.startsWith("/square") ||
+    location.pathname.startsWith("/p/")
+  )
+    return <PublicApp />
 
   return (
     <AuthMiniProvider

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
-use crate::db::{AiCredentials, Context, DocumentDetail};
+use crate::db::{AiCredentials, DocumentDetail};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,19 +47,14 @@ struct ResponsesOutputTextDone {
 
 pub async fn run(
     credentials: &AiCredentials,
-    context: &Context,
     document: &DocumentDetail,
     task: AiTask,
     target_language: Option<&str>,
 ) -> Result<AiOutput, AiError> {
     let system = system_prompt(&task, target_language);
     let content = format!(
-        "Context name: {}\nContext instructions:\n{}\n\nDocument title: {}\nDocument language: {}\nDocument Markdown:\n{}",
-        context.name,
-        context.instructions,
-        document.document.title,
-        document.document.language,
-        document.revision.content
+        "Document title: {}\n\nDocument Markdown:\n{}",
+        document.document.title, document.revision.content
     );
     let endpoint = format!("{}/responses", credentials.base_url.trim_end_matches('/'));
     let response = reqwest::Client::new()

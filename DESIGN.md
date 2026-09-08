@@ -2,7 +2,7 @@
 
 ## Scene and strategy
 
-An early-morning research desk: a white writing surface, a cool graphite navigation rail, and one restrained cobalt action color. The interface is a product workspace, not a marketing page. It borrows HIT's grouped Drawer, compact header, and wide working inset, then assigns the visual emphasis to the document and its context instead of operational statistics.
+An early-morning research desk: a white writing surface, a cool graphite navigation rail, and one restrained cobalt action color. The interface is a document tool, not a marketing page. It assigns visual emphasis to the document, its publication state, and the public reading experience instead of operational statistics.
 
 ## Color tokens
 
@@ -28,4 +28,4 @@ Geist is the UI face. The editing canvas uses a measured 16px body and a 72ch pr
 
 ## Layout and components
 
-The responsive application shell follows HIT: a grouped Base UI Sidebar on desktop, a compact sheet on mobile, a sticky 56px header, and a generous content inset. The editor is a three-region workspace: document tree, writing canvas, and contextual AI panel. Shared controls are shadcn Base UI components; surfaces use an 8px radius and either a quiet border or a defined small shadow, never both as decoration. Motion stays within 150–200ms and communicates save, publish, or task state only.
+The responsive application shell uses a compact document list, a writing canvas, and an optional AI panel. The public square is a readable list of articles and the public reader limits prose to a 72ch measure. Shared controls are shadcn Base UI components; surfaces use an 8px radius and either a quiet border or a defined small shadow, never both as decoration. Motion stays within 150–200ms and communicates save, publish, or task state only.

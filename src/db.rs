@@ -2,13 +2,54 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::crypto::{Cipher, CipherError};
+
+const CURRENT_TABLES_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS documents (
+        id TEXT PRIMARY KEY NOT NULL,
+        owner_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('draft', 'published')),
+        visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private', 'public')),
+        metadata_json TEXT NOT NULL,
+        current_revision_id TEXT NOT NULL,
+        published_revision_id TEXT,
+        published_title TEXT,
+        published_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS document_revisions (
+        id TEXT PRIMARY KEY NOT NULL,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        message TEXT NOT NULL,
+        author_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ai_runs (
+        id TEXT PRIMARY KEY NOT NULL,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        source_revision_id TEXT NOT NULL REFERENCES document_revisions(id),
+        task TEXT NOT NULL,
+        output TEXT NOT NULL,
+        proposed_content TEXT,
+        created_at INTEGER NOT NULL
+    );
+";
+
+const CURRENT_INDEXES_SQL: &str = "
+    CREATE INDEX IF NOT EXISTS documents_owner_idx ON documents(owner_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS documents_public_idx ON documents(visibility, status, published_at DESC);
+    CREATE INDEX IF NOT EXISTS document_revisions_document_idx ON document_revisions(document_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS ai_runs_document_idx ON ai_runs(document_id, created_at DESC);
+";
 
 #[derive(Clone)]
 pub struct Database {
@@ -33,31 +74,18 @@ pub enum DatabaseError {
     Cipher(#[from] CipherError),
     #[error("stored JSON is invalid")]
     Json(#[from] serde_json::Error),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Context {
-    pub id: String,
-    pub owner_id: String,
-    pub name: String,
-    pub slug: String,
-    pub description: String,
-    pub instructions: String,
-    pub visibility: String,
-    pub document_count: i64,
-    pub created_at: i64,
-    pub updated_at: i64,
+    #[error("database migration failed: {0}")]
+    Migration(String),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Document {
     pub id: String,
-    pub context_id: String,
+    pub owner_id: String,
     pub title: String,
-    pub slug: String,
-    pub language: String,
-    pub kind: String,
     pub status: String,
+    #[serde(skip_serializing)]
+    pub visibility: String,
     pub metadata: Value,
     pub current_revision_id: String,
     pub published_revision_id: Option<String>,
@@ -82,6 +110,21 @@ pub struct DocumentDetail {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PublicDocumentSummary {
+    pub id: String,
+    pub title: String,
+    pub published_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PublicDocumentDetail {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub published_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AiConfiguration {
     pub base_url: String,
     pub model: String,
@@ -98,7 +141,6 @@ pub struct AiCredentials {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AiRun {
     pub id: String,
-    pub context_id: String,
     pub document_id: String,
     pub source_revision_id: String,
     pub task: String,
@@ -109,12 +151,8 @@ pub struct AiRun {
 
 #[derive(Clone, Debug)]
 pub struct NewDocument<'a> {
-    pub context_id: &'a str,
     pub author_id: &'a str,
     pub title: &'a str,
-    pub slug: &'a str,
-    pub language: &'a str,
-    pub kind: &'a str,
     pub content: &'a str,
     pub message: &'a str,
 }
@@ -124,7 +162,6 @@ pub struct DocumentSave<'a> {
     pub id: &'a str,
     pub author_id: &'a str,
     pub title: &'a str,
-    pub slug: &'a str,
     pub content: &'a str,
     pub message: &'a str,
     pub metadata: &'a Value,
@@ -135,7 +172,7 @@ impl Database {
         let state_directory = state_directory.as_ref();
         let cipher = Cipher::load_or_create(state_directory)?;
         let database_path = state_directory.join("ctx.sqlite3");
-        let connection = Connection::open(&database_path)?;
+        let mut connection = Connection::open(&database_path)?;
         connection.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -145,56 +182,12 @@ impl Database {
                 key TEXT PRIMARY KEY NOT NULL,
                 value TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS contexts (
-                id TEXT PRIMARY KEY NOT NULL,
-                owner_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                slug TEXT NOT NULL UNIQUE,
-                description TEXT NOT NULL,
-                instructions TEXT NOT NULL,
-                visibility TEXT NOT NULL CHECK(visibility IN ('private', 'public')),
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS contexts_owner_id_idx ON contexts(owner_id, updated_at DESC);
-            CREATE TABLE IF NOT EXISTS documents (
-                id TEXT PRIMARY KEY NOT NULL,
-                context_id TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
-                title TEXT NOT NULL,
-                slug TEXT NOT NULL,
-                language TEXT NOT NULL,
-                kind TEXT NOT NULL CHECK(kind IN ('docs', 'blog')),
-                status TEXT NOT NULL CHECK(status IN ('draft', 'published')),
-                metadata_json TEXT NOT NULL,
-                current_revision_id TEXT NOT NULL,
-                published_revision_id TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                UNIQUE(context_id, slug)
-            );
-            CREATE INDEX IF NOT EXISTS documents_context_idx ON documents(context_id, kind, updated_at DESC);
-            CREATE TABLE IF NOT EXISTS document_revisions (
-                id TEXT PRIMARY KEY NOT NULL,
-                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-                content TEXT NOT NULL,
-                message TEXT NOT NULL,
-                author_id TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS document_revisions_document_idx ON document_revisions(document_id, created_at DESC);
-            CREATE TABLE IF NOT EXISTS ai_runs (
-                id TEXT PRIMARY KEY NOT NULL,
-                context_id TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
-                document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-                source_revision_id TEXT NOT NULL REFERENCES document_revisions(id),
-                task TEXT NOT NULL,
-                output TEXT NOT NULL,
-                proposed_content TEXT,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS ai_runs_document_idx ON ai_runs(document_id, created_at DESC);
             ",
         )?;
+        migrate_legacy_context_schema(&mut connection)?;
+        add_direct_document_columns_if_needed(&connection)?;
+        connection.execute_batch(CURRENT_TABLES_SQL)?;
+        connection.execute_batch(CURRENT_INDEXES_SQL)?;
         connection.execute(
             "INSERT INTO app_meta(key, value) VALUES ('ai_base_url', 'https://openai.ntnl.io/v1') ON CONFLICT(key) DO NOTHING",
             [],
@@ -268,64 +261,6 @@ impl Database {
         }))
     }
 
-    pub fn create_context(
-        &self,
-        owner_id: &str,
-        name: &str,
-        slug: &str,
-        description: &str,
-        instructions: &str,
-        visibility: &str,
-    ) -> Result<Context, DatabaseError> {
-        let context = Context {
-            id: Uuid::new_v4().to_string(),
-            owner_id: owner_id.to_owned(),
-            name: name.to_owned(),
-            slug: slug.to_owned(),
-            description: description.to_owned(),
-            instructions: instructions.to_owned(),
-            visibility: visibility.to_owned(),
-            document_count: 0,
-            created_at: now(),
-            updated_at: now(),
-        };
-        self.connection()?.execute(
-            "INSERT INTO contexts(id, owner_id, name, slug, description, instructions, visibility, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![context.id, context.owner_id, context.name, context.slug, context.description, context.instructions, context.visibility, context.created_at, context.updated_at],
-        )?;
-        Ok(context)
-    }
-
-    pub fn list_contexts(&self, owner_id: Option<&str>) -> Result<Vec<Context>, DatabaseError> {
-        let connection = self.connection()?;
-        let sql = "SELECT c.id, c.owner_id, c.name, c.slug, c.description, c.instructions, c.visibility, COUNT(d.id), c.created_at, c.updated_at FROM contexts c LEFT JOIN documents d ON d.context_id = c.id";
-        let suffix = " GROUP BY c.id ORDER BY c.updated_at DESC";
-        let rows = if let Some(owner_id) = owner_id {
-            let mut statement =
-                connection.prepare(&format!("{sql} WHERE c.owner_id = ?1{suffix}"))?;
-            statement
-                .query_map([owner_id], context_from_row)?
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            let mut statement = connection.prepare(&format!("{sql}{suffix}"))?;
-            statement
-                .query_map([], context_from_row)?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        Ok(rows)
-    }
-
-    pub fn get_context(&self, id: &str) -> Result<Option<Context>, DatabaseError> {
-        self.connection()?
-            .query_row(
-                "SELECT c.id, c.owner_id, c.name, c.slug, c.description, c.instructions, c.visibility, COUNT(d.id), c.created_at, c.updated_at FROM contexts c LEFT JOIN documents d ON d.context_id = c.id WHERE c.id = ?1 GROUP BY c.id",
-                [id],
-                context_from_row,
-            )
-            .optional()
-            .map_err(DatabaseError::Sqlite)
-    }
-
     pub fn create_document(
         &self,
         input: &NewDocument<'_>,
@@ -341,12 +276,10 @@ impl Database {
         };
         let document = Document {
             id: document_id,
-            context_id: input.context_id.to_owned(),
+            owner_id: input.author_id.to_owned(),
             title: input.title.to_owned(),
-            slug: input.slug.to_owned(),
-            language: input.language.to_owned(),
-            kind: input.kind.to_owned(),
             status: "draft".to_owned(),
+            visibility: "private".to_owned(),
             metadata: Value::Object(Default::default()),
             current_revision_id: revision.id.clone(),
             published_revision_id: None,
@@ -356,26 +289,24 @@ impl Database {
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         transaction.execute(
-            "INSERT INTO documents(id, context_id, title, slug, language, kind, status, metadata_json, current_revision_id, published_revision_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11)",
-            params![document.id, document.context_id, document.title, document.slug, document.language, document.kind, document.status, document.metadata.to_string(), document.current_revision_id, document.created_at, document.updated_at],
+            "INSERT INTO documents(id, owner_id, title, status, visibility, metadata_json, current_revision_id, published_revision_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)",
+            params![document.id, document.owner_id, document.title, document.status, document.visibility, document.metadata.to_string(), document.current_revision_id, document.created_at, document.updated_at],
         )?;
         transaction.execute(
             "INSERT INTO document_revisions(id, document_id, content, message, author_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![revision.id, revision.document_id, revision.content, revision.message, revision.author_id, revision.created_at],
         )?;
-        transaction.execute(
-            "UPDATE contexts SET updated_at = ?2 WHERE id = ?1",
-            params![input.context_id, now()],
-        )?;
         transaction.commit()?;
         Ok(DocumentDetail { document, revision })
     }
 
-    pub fn list_documents(&self, context_id: &str) -> Result<Vec<Document>, DatabaseError> {
+    pub fn list_documents(&self, owner_id: &str) -> Result<Vec<Document>, DatabaseError> {
         let connection = self.connection()?;
-        let mut statement = connection.prepare("SELECT id, context_id, title, slug, language, kind, status, metadata_json, current_revision_id, published_revision_id, created_at, updated_at FROM documents WHERE context_id = ?1 ORDER BY kind, updated_at DESC")?;
+        let mut statement = connection.prepare(
+            "SELECT id, owner_id, title, status, visibility, metadata_json, current_revision_id, published_revision_id, created_at, updated_at FROM documents WHERE owner_id = ?1 ORDER BY updated_at DESC, id DESC",
+        )?;
         Ok(statement
-            .query_map([context_id], document_from_row)?
+            .query_map([owner_id], document_from_row)?
             .collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -383,7 +314,7 @@ impl Database {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT d.id, d.context_id, d.title, d.slug, d.language, d.kind, d.status, d.metadata_json, d.current_revision_id, d.published_revision_id, d.created_at, d.updated_at, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id WHERE d.id = ?1",
+                "SELECT d.id, d.owner_id, d.title, d.status, d.visibility, d.metadata_json, d.current_revision_id, d.published_revision_id, d.created_at, d.updated_at, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id AND r.document_id = d.id WHERE d.id = ?1",
                 [id],
                 document_detail_from_row,
             )
@@ -413,17 +344,12 @@ impl Database {
             params![revision.id, revision.document_id, revision.content, revision.message, revision.author_id, revision.created_at],
         )?;
         transaction.execute(
-            "UPDATE documents SET title = ?2, slug = ?3, metadata_json = ?4, current_revision_id = ?5, updated_at = ?6 WHERE id = ?1",
-            params![input.id, input.title, input.slug, input.metadata.to_string(), revision.id, revision.created_at],
-        )?;
-        transaction.execute(
-            "UPDATE contexts SET updated_at = ?2 WHERE id = ?1",
-            params![existing.document.context_id, revision.created_at],
+            "UPDATE documents SET title = ?2, metadata_json = ?3, current_revision_id = ?4, updated_at = ?5 WHERE id = ?1",
+            params![input.id, input.title, input.metadata.to_string(), revision.id, revision.created_at],
         )?;
         transaction.commit()?;
         let document = Document {
             title: input.title.to_owned(),
-            slug: input.slug.to_owned(),
             metadata: input.metadata.clone(),
             current_revision_id: revision.id.clone(),
             updated_at: revision.created_at,
@@ -436,32 +362,41 @@ impl Database {
         let Some(mut detail) = self.get_document(id)? else {
             return Ok(None);
         };
-        let now = now();
+        let updated_at = now();
         self.connection()?.execute(
-            "UPDATE documents SET status = 'published', published_revision_id = current_revision_id, updated_at = ?2 WHERE id = ?1",
-            params![id, now],
+            "UPDATE documents SET status = 'published', visibility = 'public', published_revision_id = current_revision_id, published_title = title, published_at = ?2, updated_at = ?2 WHERE id = ?1",
+            params![id, updated_at],
         )?;
         detail.document.status = "published".to_owned();
+        detail.document.visibility = "public".to_owned();
         detail.document.published_revision_id = Some(detail.document.current_revision_id.clone());
-        detail.document.updated_at = now;
+        detail.document.updated_at = updated_at;
         Ok(Some(detail.document))
     }
 
-    pub fn public_document(
-        &self,
-        context_slug: &str,
-        document_slug: &str,
-    ) -> Result<Option<DocumentDetail>, DatabaseError> {
-        self.connection()?.query_row(
-            "SELECT d.id, d.context_id, d.title, d.slug, d.language, d.kind, d.status, d.metadata_json, d.current_revision_id, d.published_revision_id, d.created_at, d.updated_at, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM contexts c JOIN documents d ON d.context_id = c.id JOIN document_revisions r ON r.id = d.published_revision_id WHERE c.slug = ?1 AND c.visibility = 'public' AND d.slug = ?2 AND d.status = 'published'",
-            params![context_slug, document_slug],
-            document_detail_from_row,
-        ).optional().map_err(DatabaseError::Sqlite)
+    pub fn public_documents(&self) -> Result<Vec<PublicDocumentSummary>, DatabaseError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT d.id, d.published_title, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL ORDER BY d.published_at DESC, d.id DESC",
+        )?;
+        Ok(statement
+            .query_map([], public_document_summary_from_row)?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn public_document(&self, id: &str) -> Result<Option<PublicDocumentDetail>, DatabaseError> {
+        self.connection()?
+            .query_row(
+                "SELECT d.id, d.published_title, r.content, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.id = ?1 AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL",
+                [id],
+                public_document_detail_from_row,
+            )
+            .optional()
+            .map_err(DatabaseError::Sqlite)
     }
 
     pub fn record_ai_run(
         &self,
-        context_id: &str,
         document_id: &str,
         source_revision_id: &str,
         task: &str,
@@ -470,7 +405,6 @@ impl Database {
     ) -> Result<AiRun, DatabaseError> {
         let run = AiRun {
             id: Uuid::new_v4().to_string(),
-            context_id: context_id.to_owned(),
             document_id: document_id.to_owned(),
             source_revision_id: source_revision_id.to_owned(),
             task: task.to_owned(),
@@ -479,8 +413,8 @@ impl Database {
             created_at: now(),
         };
         self.connection()?.execute(
-            "INSERT INTO ai_runs(id, context_id, document_id, source_revision_id, task, output, proposed_content, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![run.id, run.context_id, run.document_id, run.source_revision_id, run.task, run.output, run.proposed_content, run.created_at],
+            "INSERT INTO ai_runs(id, document_id, source_revision_id, task, output, proposed_content, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![run.id, run.document_id, run.source_revision_id, run.task, run.output, run.proposed_content, run.created_at],
         )?;
         Ok(run)
     }
@@ -507,36 +441,264 @@ impl Database {
     }
 }
 
-fn context_from_row(row: &Row<'_>) -> rusqlite::Result<Context> {
-    Ok(Context {
-        id: row.get(0)?,
-        owner_id: row.get(1)?,
-        name: row.get(2)?,
-        slug: row.get(3)?,
-        description: row.get(4)?,
-        instructions: row.get(5)?,
-        visibility: row.get(6)?,
-        document_count: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
-    })
+fn migrate_legacy_context_schema(connection: &mut Connection) -> Result<(), DatabaseError> {
+    // COMPATIBILITY: CTX 0.1 stored documents below contexts. This runs only for databases
+    // without documents.owner_id. Remove after every supported deployed database has been
+    // upgraded; verify with PRAGMA table_info(documents) before removing this path.
+    if !table_exists(connection, "documents")?
+        || table_has_column(connection, "documents", "owner_id")?
+    {
+        return Ok(());
+    }
+    for table in ["contexts", "document_revisions"] {
+        if !table_exists(connection, table)? {
+            return Err(DatabaseError::Migration(format!(
+                "legacy documents require the {table} table"
+            )));
+        }
+    }
+    if !table_has_column(connection, "documents", "context_id")? {
+        return Err(DatabaseError::Migration(
+            "documents has neither owner_id nor context_id".to_owned(),
+        ));
+    }
+    let documents_without_owner: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM documents d LEFT JOIN contexts c ON c.id = d.context_id WHERE c.id IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    if documents_without_owner != 0 {
+        return Err(DatabaseError::Migration(
+            "legacy documents without a Context owner cannot be migrated safely".to_owned(),
+        ));
+    }
+    let documents_without_current_revision: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM documents d LEFT JOIN document_revisions r ON r.id = d.current_revision_id WHERE r.id IS NULL OR r.document_id != d.id",
+        [],
+        |row| row.get(0),
+    )?;
+    if documents_without_current_revision != 0 {
+        return Err(DatabaseError::Migration(
+            "legacy documents with a current revision from another document cannot be migrated safely"
+                .to_owned(),
+        ));
+    }
+    let document_count = table_count(connection, "documents")?;
+    let revision_count = table_count(connection, "document_revisions")?;
+    let has_ai_runs = table_exists(connection, "ai_runs")?;
+    let ai_run_count = has_ai_runs
+        .then(|| table_count(connection, "ai_runs"))
+        .transpose()?
+        .unwrap_or_default();
+
+    connection.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let migration = (|| -> Result<(), DatabaseError> {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if has_ai_runs {
+            transaction.execute_batch("ALTER TABLE ai_runs RENAME TO ai_runs_legacy;")?;
+        }
+        transaction.execute_batch(
+            "
+            ALTER TABLE document_revisions RENAME TO document_revisions_legacy;
+            ALTER TABLE documents RENAME TO documents_legacy;
+            ",
+        )?;
+        transaction.execute_batch(CURRENT_TABLES_SQL)?;
+        transaction.execute(
+            "INSERT INTO documents(id, owner_id, title, status, visibility, metadata_json, current_revision_id, published_revision_id, published_title, published_at, created_at, updated_at) SELECT d.id, c.owner_id, d.title, CASE WHEN c.visibility = 'public' AND d.status = 'published' AND published_revision.id IS NOT NULL THEN 'published' ELSE 'draft' END, CASE WHEN c.visibility = 'public' AND d.status = 'published' AND published_revision.id IS NOT NULL THEN 'public' ELSE 'private' END, d.metadata_json, d.current_revision_id, CASE WHEN c.visibility = 'public' AND d.status = 'published' AND published_revision.id IS NOT NULL THEN d.published_revision_id END, CASE WHEN c.visibility = 'public' AND d.status = 'published' AND published_revision.id IS NOT NULL AND d.current_revision_id = d.published_revision_id THEN d.title WHEN c.visibility = 'public' AND d.status = 'published' AND published_revision.id IS NOT NULL THEN 'Published document' END, CASE WHEN c.visibility = 'public' AND d.status = 'published' AND published_revision.id IS NOT NULL THEN published_revision.created_at END, d.created_at, d.updated_at FROM documents_legacy d JOIN contexts c ON c.id = d.context_id LEFT JOIN document_revisions_legacy published_revision ON published_revision.id = d.published_revision_id AND published_revision.document_id = d.id",
+            [],
+        )?;
+        transaction.execute(
+            "INSERT INTO document_revisions(id, document_id, content, message, author_id, created_at) SELECT id, document_id, content, message, author_id, created_at FROM document_revisions_legacy",
+            [],
+        )?;
+        if has_ai_runs {
+            transaction.execute(
+                "INSERT INTO ai_runs(id, document_id, source_revision_id, task, output, proposed_content, created_at) SELECT id, document_id, source_revision_id, task, output, proposed_content, created_at FROM ai_runs_legacy",
+                [],
+            )?;
+        }
+        verify_migration_counts(
+            &transaction,
+            document_count,
+            revision_count,
+            ai_run_count,
+            has_ai_runs,
+        )?;
+        verify_document_revision_links(&transaction)?;
+        if has_ai_runs {
+            transaction.execute_batch("DROP TABLE ai_runs_legacy;")?;
+        }
+        transaction.execute_batch(
+            "
+            DROP TABLE document_revisions_legacy;
+            DROP TABLE documents_legacy;
+            DROP TABLE contexts;
+            ",
+        )?;
+        verify_foreign_keys(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    })();
+    let foreign_keys = connection.execute_batch("PRAGMA foreign_keys = ON;");
+    migration?;
+    foreign_keys?;
+    verify_connection_foreign_keys(connection)?;
+    Ok(())
+}
+
+fn add_direct_document_columns_if_needed(connection: &Connection) -> Result<(), DatabaseError> {
+    // COMPATIBILITY: early direct-document builds did not persist publication snapshots.
+    // Remove after no supported database lacks these columns; verify with PRAGMA table_info.
+    if !table_exists(connection, "documents")?
+        || !table_has_column(connection, "documents", "owner_id")?
+    {
+        return Ok(());
+    }
+    for (column, definition) in [
+        ("visibility", "TEXT NOT NULL DEFAULT 'private'"),
+        ("published_title", "TEXT"),
+        ("published_at", "INTEGER"),
+    ] {
+        if !table_has_column(connection, "documents", column)? {
+            connection.execute(
+                &format!("ALTER TABLE documents ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool, DatabaseError> {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(DatabaseError::Sqlite)
+}
+
+fn table_has_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, DatabaseError> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(columns.iter().any(|name| name == column))
+}
+
+fn table_count(connection: &Connection, table: &str) -> Result<i64, DatabaseError> {
+    connection
+        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .map_err(DatabaseError::Sqlite)
+}
+
+fn verify_migration_counts(
+    transaction: &rusqlite::Transaction<'_>,
+    document_count: i64,
+    revision_count: i64,
+    ai_run_count: i64,
+    has_ai_runs: bool,
+) -> Result<(), DatabaseError> {
+    let migrated_document_count: i64 =
+        transaction.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))?;
+    let migrated_revision_count: i64 =
+        transaction.query_row("SELECT COUNT(*) FROM document_revisions", [], |row| {
+            row.get(0)
+        })?;
+    let migrated_ai_run_count = if has_ai_runs {
+        transaction.query_row("SELECT COUNT(*) FROM ai_runs", [], |row| row.get(0))?
+    } else {
+        0
+    };
+    if (
+        migrated_document_count,
+        migrated_revision_count,
+        migrated_ai_run_count,
+    ) == (document_count, revision_count, ai_run_count)
+    {
+        Ok(())
+    } else {
+        Err(DatabaseError::Migration(
+            "legacy row counts changed during migration".to_owned(),
+        ))
+    }
+}
+
+fn verify_foreign_keys(transaction: &rusqlite::Transaction<'_>) -> Result<(), DatabaseError> {
+    let has_violation = {
+        let mut statement = transaction.prepare("PRAGMA foreign_key_check")?;
+        let mut rows = statement.query([])?;
+        rows.next()?.is_some()
+    };
+    if has_violation {
+        Err(DatabaseError::Migration(
+            "foreign_key_check found a migrated row without its parent".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn verify_document_revision_links(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<(), DatabaseError> {
+    let invalid_current_revision_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM documents d LEFT JOIN document_revisions r ON r.id = d.current_revision_id WHERE r.id IS NULL OR r.document_id != d.id",
+        [],
+        |row| row.get(0),
+    )?;
+    let invalid_published_revision_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM documents d LEFT JOIN document_revisions r ON r.id = d.published_revision_id WHERE d.published_revision_id IS NOT NULL AND (r.id IS NULL OR r.document_id != d.id)",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid_current_revision_count == 0 && invalid_published_revision_count == 0 {
+        Ok(())
+    } else {
+        Err(DatabaseError::Migration(
+            "a document revision link points at another document".to_owned(),
+        ))
+    }
+}
+
+fn verify_connection_foreign_keys(connection: &Connection) -> Result<(), DatabaseError> {
+    let has_violation = {
+        let mut statement = connection.prepare("PRAGMA foreign_key_check")?;
+        let mut rows = statement.query([])?;
+        rows.next()?.is_some()
+    };
+    if has_violation {
+        Err(DatabaseError::Migration(
+            "foreign_key_check failed after migration commit".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn document_from_row(row: &Row<'_>) -> rusqlite::Result<Document> {
-    let metadata: String = row.get(7)?;
+    let metadata: String = row.get(5)?;
     Ok(Document {
         id: row.get(0)?,
-        context_id: row.get(1)?,
+        owner_id: row.get(1)?,
         title: row.get(2)?,
-        slug: row.get(3)?,
-        language: row.get(4)?,
-        kind: row.get(5)?,
-        status: row.get(6)?,
+        status: row.get(3)?,
+        visibility: row.get(4)?,
         metadata: serde_json::from_str(&metadata).unwrap_or(Value::Object(Default::default())),
-        current_revision_id: row.get(8)?,
-        published_revision_id: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        current_revision_id: row.get(6)?,
+        published_revision_id: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
     })
 }
 
@@ -545,13 +707,30 @@ fn document_detail_from_row(row: &Row<'_>) -> rusqlite::Result<DocumentDetail> {
     Ok(DocumentDetail {
         document,
         revision: DocumentRevision {
-            id: row.get(12)?,
-            document_id: row.get(13)?,
-            content: row.get(14)?,
-            message: row.get(15)?,
-            author_id: row.get(16)?,
-            created_at: row.get(17)?,
+            id: row.get(10)?,
+            document_id: row.get(11)?,
+            content: row.get(12)?,
+            message: row.get(13)?,
+            author_id: row.get(14)?,
+            created_at: row.get(15)?,
         },
+    })
+}
+
+fn public_document_summary_from_row(row: &Row<'_>) -> rusqlite::Result<PublicDocumentSummary> {
+    Ok(PublicDocumentSummary {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        published_at: row.get(2)?,
+    })
+}
+
+fn public_document_detail_from_row(row: &Row<'_>) -> rusqlite::Result<PublicDocumentDetail> {
+    Ok(PublicDocumentDetail {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        content: row.get(2)?,
+        published_at: row.get(3)?,
     })
 }
 
@@ -561,10 +740,13 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Database, NewDocument};
+    use rusqlite::Connection;
+    use serde_json::json;
+
+    use super::{Database, DocumentSave, NewDocument};
 
     #[test]
-    fn database_uses_wal_and_keeps_a_published_revision() {
+    fn documents_belong_to_their_owner_and_keep_published_revisions_immutable() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path()).unwrap();
         let journal_mode: String = database
@@ -573,31 +755,262 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .unwrap();
         assert_eq!(journal_mode, "wal");
-        database.initialize_root_user("root").unwrap();
-        let context = database
-            .create_context("root", "Research", "research", "", "", "public")
-            .unwrap();
-        let document = database
+
+        let created = database
             .create_document(&NewDocument {
-                context_id: &context.id,
-                author_id: "root",
+                author_id: "author-a",
                 title: "First note",
-                slug: "first-note",
-                language: "en",
-                kind: "docs",
                 content: "# First note",
-                message: "Initial draft",
+                message: "Created document",
             })
             .unwrap();
+        assert_eq!(created.document.owner_id, "author-a");
+        assert!(database.list_documents("author-b").unwrap().is_empty());
+
+        let metadata = json!({"topic": "testing"});
+        let saved = database
+            .save_document(&DocumentSave {
+                id: &created.document.id,
+                author_id: "author-a",
+                title: "Published note",
+                content: "# Published note",
+                message: "Ready to publish",
+                metadata: &metadata,
+            })
+            .unwrap()
+            .unwrap();
         let published = database
-            .publish_document(&document.document.id)
+            .publish_document(&created.document.id)
             .unwrap()
             .unwrap();
-        assert_eq!(published.status, "published");
+        assert_eq!(
+            published.published_revision_id.as_deref(),
+            Some(saved.revision.id.as_str())
+        );
+
+        let later_metadata = json!({"topic": "later"});
+        database
+            .save_document(&DocumentSave {
+                id: &created.document.id,
+                author_id: "author-a",
+                title: "Later draft",
+                content: "# Later draft",
+                message: "Continue editing",
+                metadata: &later_metadata,
+            })
+            .unwrap();
+
         let public = database
-            .public_document("research", "first-note")
+            .public_document(&created.document.id)
             .unwrap()
             .unwrap();
-        assert_eq!(public.revision.content, "# First note");
+        assert_eq!(public.title, "Published note");
+        assert_eq!(public.content, "# Published note");
+        assert_eq!(database.public_documents().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn legacy_context_migration_preserves_owners_and_private_publication_boundary() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy_path = directory.path().join("ctx.sqlite3");
+        let legacy = Connection::open(&legacy_path).unwrap();
+        legacy
+            .execute_batch(
+                "
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE contexts (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    slug TEXT NOT NULL UNIQUE,
+                    description TEXT NOT NULL,
+                    instructions TEXT NOT NULL,
+                    visibility TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE documents (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    context_id TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    slug TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    current_revision_id TEXT NOT NULL,
+                    published_revision_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE document_revisions (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    author_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE ai_runs (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    context_id TEXT NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
+                    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    source_revision_id TEXT NOT NULL REFERENCES document_revisions(id),
+                    task TEXT NOT NULL,
+                    output TEXT NOT NULL,
+                    proposed_content TEXT,
+                    created_at INTEGER NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO contexts(id, owner_id, name, slug, description, instructions, visibility, created_at, updated_at) VALUES ('public-context', 'author-a', 'Public', 'public', '', '', 'public', 1, 1), ('private-context', 'author-b', 'Private', 'private', '', '', 'private', 1, 1)",
+                [],
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO documents(id, context_id, title, slug, language, kind, status, metadata_json, current_revision_id, published_revision_id, created_at, updated_at) VALUES ('public-document', 'public-context', 'Public note', 'public-note', 'en', 'docs', 'published', '{}', 'public-revision', 'public-revision', 2, 2), ('private-document', 'private-context', 'Private note', 'private-note', 'en', 'docs', 'published', '{}', 'private-revision', 'private-revision', 3, 3), ('changed-document', 'public-context', 'Unpublished title', 'changed-note', 'en', 'docs', 'published', '{}', 'changed-draft-revision', 'changed-published-revision', 4, 5)",
+                [],
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO document_revisions(id, document_id, content, message, author_id, created_at) VALUES ('public-revision', 'public-document', '# Public', 'Created', 'author-a', 2), ('private-revision', 'private-document', '# Private', 'Created', 'author-b', 3), ('changed-published-revision', 'changed-document', '# Original public title', 'Published', 'author-a', 4), ('changed-draft-revision', 'changed-document', '# Draft title', 'Saved draft', 'author-a', 5)",
+                [],
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO ai_runs(id, context_id, document_id, source_revision_id, task, output, proposed_content, created_at) VALUES ('run-1', 'public-context', 'public-document', 'public-revision', 'summary', 'Summary', NULL, 4)",
+                [],
+            )
+            .unwrap();
+        drop(legacy);
+
+        let database = Database::open(directory.path()).unwrap();
+        assert_eq!(
+            database
+                .get_document("public-document")
+                .unwrap()
+                .unwrap()
+                .document
+                .owner_id,
+            "author-a"
+        );
+        assert_eq!(
+            database
+                .get_document("private-document")
+                .unwrap()
+                .unwrap()
+                .document
+                .owner_id,
+            "author-b"
+        );
+        let public_documents = database.public_documents().unwrap();
+        assert_eq!(public_documents.len(), 2);
+        assert!(
+            public_documents
+                .iter()
+                .any(|document| document.title == "Public note" && document.published_at == 2)
+        );
+        assert!(public_documents.iter().any(|document| {
+            document.title == "Published document" && document.published_at == 4
+        }));
+        assert!(
+            database
+                .public_document("private-document")
+                .unwrap()
+                .is_none()
+        );
+        let changed_public_document = database
+            .public_document("changed-document")
+            .unwrap()
+            .unwrap();
+        assert_eq!(changed_public_document.title, "Published document");
+        assert_eq!(changed_public_document.content, "# Original public title");
+        assert_eq!(changed_public_document.published_at, 4);
+        let public_document = database
+            .get_document("public-document")
+            .unwrap()
+            .unwrap()
+            .document;
+        let private_document = database
+            .get_document("private-document")
+            .unwrap()
+            .unwrap()
+            .document;
+        let changed_document = database
+            .get_document("changed-document")
+            .unwrap()
+            .unwrap()
+            .document;
+        let connection = database.connection().unwrap();
+        assert_eq!(public_document.status, "published");
+        assert_eq!(
+            public_document.published_revision_id.as_deref(),
+            Some("public-revision")
+        );
+        assert_eq!(private_document.status, "draft");
+        assert!(private_document.published_revision_id.is_none());
+        assert_eq!(changed_document.status, "published");
+        assert_eq!(
+            changed_document.published_revision_id.as_deref(),
+            Some("changed-published-revision")
+        );
+        for (document_id, revision_id) in [
+            (
+                "public-document",
+                public_document.current_revision_id.as_str(),
+            ),
+            (
+                "public-document",
+                public_document.published_revision_id.as_deref().unwrap(),
+            ),
+            (
+                "private-document",
+                private_document.current_revision_id.as_str(),
+            ),
+            (
+                "changed-document",
+                changed_document.current_revision_id.as_str(),
+            ),
+            (
+                "changed-document",
+                changed_document.published_revision_id.as_deref().unwrap(),
+            ),
+        ] {
+            let revision_document_id: String = connection
+                .query_row(
+                    "SELECT document_id FROM document_revisions WHERE id = ?1",
+                    [revision_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(revision_document_id, document_id);
+        }
+        let contexts_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'contexts')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!contexts_exists);
+        let ai_run_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM ai_runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(ai_run_count, 1);
+        let mut statement = connection.prepare("PRAGMA foreign_key_check").unwrap();
+        assert!(statement.query([]).unwrap().next().unwrap().is_none());
+        drop(statement);
+        drop(connection);
+        drop(database);
+
+        let reopened = Database::open(directory.path()).unwrap();
+        assert_eq!(reopened.list_documents("author-a").unwrap().len(), 2);
+        assert_eq!(reopened.public_documents().unwrap().len(), 2);
     }
 }

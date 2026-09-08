@@ -10,15 +10,15 @@ web
 
 ## Users
 
-Primary users are individual writers and small teams building a durable body of knowledge: product documentation, research, and public writing. They enter CTX to turn a growing Markdown collection into a bounded, reliable AI context, then publish the work as documentation or a blog. The root administrator configures the single hosted instance and oversees its AI connection.
+Primary users are writers who want to draft in Markdown, retain a reliable revision history, and publish directly for other people to read. Readers use the public square to discover published articles from every author. The root administrator configures the single hosted instance and oversees its AI connection.
 
 ## Product Purpose
 
-CTX is an AI-native Markdown Context CMS. It keeps Markdown and its revisions as the source of truth, makes an online editor the authoring surface, and lets AI translate, extract metadata, summarize, and answer from a deliberately scoped Context. Success means a creator can write, review an AI proposal, and publish a clear public surface without losing control of the source material.
+CTX is an AI-native Markdown publishing tool. It keeps Markdown and its revisions as the source of truth, makes an online editor the authoring surface, and lets AI translate, extract metadata, and summarize the document being edited. Success means a creator can write, review an AI proposal, publish a clear public article, and let readers discover it without losing control of the source material.
 
 ## Positioning
 
-Make a living Markdown collection trustworthy enough for both people and AI to work from.
+Make individual Markdown documents trustworthy enough to write, revise, publish, and read.
 
 ## Brand Personality
 
@@ -31,10 +31,11 @@ Avoid generic chatbot-first dashboards, decorative AI gradients, dense Notion im
 ## Design Principles
 
 1. Source before suggestion: Markdown and its revision are always visible, while AI changes arrive as reviewable proposals.
-2. Scope is a feature: a Context has a clear document boundary, and every AI answer shows its source documents.
-3. Publishing is a projection: Docs and Blog organise the same source material without duplicating it.
-4. Editorial calm: sustained writing takes priority over metrics, visual noise, or disruptive confirmation flows.
-5. Administrative power stays contained: AI routing and instance configuration are visible only in the root administration area.
+2. One document is one unit of work: every document belongs directly to its author and has its own revision and publication state.
+3. Publishing is explicit: a public article always renders a fixed published revision, while the author can continue editing a new revision.
+4. Discovery is public: the square lists published articles from every author without exposing private drafts.
+5. Editorial calm: sustained writing takes priority over metrics, visual noise, or disruptive confirmation flows.
+6. Administrative power stays contained: AI routing and instance configuration are visible only in the root administration area.
 
 ## Accessibility & Inclusion
 
