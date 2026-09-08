@@ -635,20 +635,32 @@ impl Database {
         let translated = target_language
             .map(|language| published_translation(&connection, &publication, language))
             .transpose()?;
-        let (title, content, language, content_fallback) = match translated {
-            Some(Some((title, content))) => (
-                title,
-                content,
-                target_language.unwrap_or_default().to_owned(),
-                false,
-            ),
-            _ => (
-                publication.title.clone(),
-                publication.content.clone(),
-                publication.source_language.clone(),
-                target_language.is_some(),
-            ),
-        };
+        let translated_metadata_exists = target_language
+            .map(|language| {
+                metadata_exists(
+                    &connection,
+                    &publication.id,
+                    &publication.source_revision_id,
+                    language,
+                )
+            })
+            .transpose()?
+            .unwrap_or(false);
+        let (title, content, language, content_fallback) =
+            match (translated, translated_metadata_exists) {
+                (Some(Some((title, content))), true) => (
+                    title,
+                    content,
+                    target_language.unwrap_or_default().to_owned(),
+                    false,
+                ),
+                _ => (
+                    publication.title.clone(),
+                    publication.content.clone(),
+                    publication.source_language.clone(),
+                    target_language.is_some(),
+                ),
+            };
         let (metadata, is_metadata_fallback) =
             published_metadata(&connection, &publication, &language)?;
         let metadata_status = metadata
@@ -1066,8 +1078,19 @@ fn public_document_summary(
     let translated = target_language
         .map(|language| published_translation(connection, publication, language))
         .transpose()?;
-    let (title, language) = match translated {
-        Some(Some((title, _))) => (title, target_language.unwrap_or_default().to_owned()),
+    let translated_metadata_exists = target_language
+        .map(|language| {
+            metadata_exists(
+                connection,
+                &publication.id,
+                &publication.source_revision_id,
+                language,
+            )
+        })
+        .transpose()?
+        .unwrap_or(false);
+    let (title, language) = match (translated, translated_metadata_exists) {
+        (Some(Some((title, _))), true) => (title, target_language.unwrap_or_default().to_owned()),
         _ => (
             publication.title.clone(),
             publication.source_language.clone(),
@@ -1456,7 +1479,7 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::Connection;
+    use rusqlite::{Connection, params};
     use serde_json::json;
 
     use super::{Database, DocumentSave, NewDocument, PublishedMetadata};
@@ -1639,6 +1662,35 @@ mod tests {
                 &source_metadata,
             )
             .unwrap();
+        database
+            .connection()
+            .unwrap()
+            .execute(
+                "INSERT INTO document_translations(document_id, language, source_revision_id, title, content, published_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    created.document.id,
+                    "en-US",
+                    source.revision.id,
+                    "Legacy title",
+                    "# Legacy translation",
+                    1,
+                ],
+            )
+            .unwrap();
+        let incomplete_legacy_translation = database
+            .public_document(&created.document.id, Some("en-US"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(incomplete_legacy_translation.language, "zh-CN");
+        assert_eq!(
+            incomplete_legacy_translation.content,
+            "# 原文\n\n- [x] 已完成"
+        );
+        assert!(incomplete_legacy_translation.is_translation_fallback);
+        assert_eq!(
+            database.public_documents(Some("en-US")).unwrap()[0].language,
+            "zh-CN"
+        );
         let english_metadata = metadata("en-US", "English description");
         assert!(
             database
