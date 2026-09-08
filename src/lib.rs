@@ -3,6 +3,7 @@
 mod ai;
 mod crypto;
 mod db;
+mod language;
 mod web;
 
 use std::net::SocketAddr;
