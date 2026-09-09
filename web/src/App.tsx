@@ -12,11 +12,16 @@ import { LinkitMyInfo, LinkitUserInfo } from "linkit-react-components"
 import {
   ArrowLeftIcon,
   BookOpenIcon,
+  CpuIcon,
+  DatabaseIcon,
   ExternalLinkIcon,
   FileTextIcon,
   Globe2Icon,
+  HardDriveIcon,
   LanguagesIcon,
   LoaderCircleIcon,
+  MemoryStickIcon,
+  NetworkIcon,
   PlusIcon,
   RefreshCwIcon,
   SaveIcon,
@@ -49,6 +54,7 @@ import type {
   PublishedMetadata,
   PublicDocument,
   PublicDocumentDetail,
+  SystemResources,
 } from "./lib/types"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -241,6 +247,13 @@ function CtxShell({ token }: { token: string }) {
                     >
                       {t("navigationAiRequests")}
                     </NavItem>
+                    <NavItem
+                      active={location.pathname === "/admin/system-resources"}
+                      icon={HardDriveIcon}
+                      onClick={() => navigate("/admin/system-resources")}
+                    >
+                      {t("navigationSystemResources")}
+                    </NavItem>
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
@@ -306,6 +319,16 @@ function CtxShell({ token }: { token: string }) {
               element={
                 me.data.is_root ? (
                   <AiRequestAuditPage token={token} />
+                ) : (
+                  <Navigate to="/documents" replace />
+                )
+              }
+            />
+            <Route
+              path="/admin/system-resources"
+              element={
+                me.data.is_root ? (
+                  <SystemResourcesPage token={token} />
                 ) : (
                   <Navigate to="/documents" replace />
                 )
@@ -1278,6 +1301,151 @@ function SetupPage({ token, onDone }: { token: string; onDone: () => void }) {
   )
 }
 
+function SystemResourcesPage({ token }: { token: string }) {
+  const { locale, t } = useI18n()
+  const resources = useQuery({
+    queryKey: ["admin-system-resources", token],
+    queryFn: () =>
+      request<SystemResources>("/api/v1/admin/system-resources", token),
+    refetchInterval: 5_000,
+  })
+
+  if (resources.isPending) return <SystemResourcesSkeleton />
+  if (resources.error || !resources.data)
+    return <PageError error={resources.error ?? new Error(t("requestFailed"))} />
+
+  const data = resources.data
+  const metrics: Array<{
+    icon: LucideIcon
+    label: string
+    value: string
+    detail: string
+    secondaryDetail?: string
+    percentage?: number
+  }> = [
+    {
+      icon: CpuIcon,
+      label: t("systemResourceCpu"),
+      value: formatPercentage(data.cpu.usage_percent, locale),
+      detail: `${t("systemResourceLoad1m")}: ${data.cpu.load_1m.toFixed(2)} · ${t("systemResourceLogicalCpus")}: ${data.cpu.logical_cpus}`,
+      percentage: data.cpu.usage_percent,
+    },
+    {
+      icon: MemoryStickIcon,
+      label: t("systemResourceMemory"),
+      value: `${formatBytes(data.memory.used_bytes, locale)} / ${formatBytes(data.memory.total_bytes, locale)}`,
+      detail: `${t("systemResourceProcessMemory")}: ${formatBytes(data.memory.process_used_bytes, locale)} · ${t("systemResourceOtherMemory")}: ${formatBytes(data.memory.other_used_bytes, locale)}`,
+      secondaryDetail: `${t("systemResourceAvailableMemory")}: ${formatBytes(data.memory.available_bytes, locale)} · ${t("systemResourceSwap")}: ${formatBytes(data.memory.swap_used_bytes, locale)} / ${formatBytes(data.memory.swap_total_bytes, locale)}`,
+      percentage: data.memory.usage_percent,
+    },
+    {
+      icon: NetworkIcon,
+      label: t("systemResourceNetwork"),
+      value: `${t("systemResourceReceived")}: ${formatRate(data.network.receive_bytes_per_second, locale)} · ${t("systemResourceTransmitted")}: ${formatRate(data.network.transmit_bytes_per_second, locale)}`,
+      detail: `${t("systemResourceNetworkInterfaces")}: ${data.network.interfaces}`,
+    },
+    {
+      icon: HardDriveIcon,
+      label: t("systemResourceDisk"),
+      value: data.disk
+        ? `${formatBytes(data.disk.used_bytes, locale)} / ${formatBytes(data.disk.total_bytes, locale)}`
+        : "—",
+      detail: data.disk
+        ? `${t("systemResourceAvailableDisk")}: ${formatBytes(data.disk.available_bytes, locale)} · ${t("systemResourceMountPoint")}: ${data.disk.mount_point}`
+        : t("systemResourceUnavailable"),
+      percentage: data.disk?.usage_percent,
+    },
+    {
+      icon: DatabaseIcon,
+      label: t("systemResourceSqlite"),
+      value: formatBytes(data.sqlite.total_bytes, locale),
+      detail: `${t("systemResourceMainFile")}: ${formatBytes(data.sqlite.main_bytes, locale)} · ${t("systemResourceWalFile")}: ${formatBytes(data.sqlite.wal_bytes, locale)} · ${t("systemResourceShmFile")}: ${formatBytes(data.sqlite.shm_bytes, locale)}`,
+      secondaryDetail: `${t("systemResourceReclaimable")}: ${formatBytes(data.sqlite.freelist_bytes, locale)} · ${formatPercentage(data.sqlite.freelist_percent, locale)}`,
+    },
+  ]
+
+  return (
+    <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 p-4 md:p-6">
+      <section className="max-w-2xl">
+        <h1 className="text-2xl font-semibold tracking-tight text-balance">
+          {t("pageTitleSystemResources")}
+        </h1>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          {t("systemResourcesDescription")}
+        </p>
+        <p className="mt-3 text-xs text-muted-foreground">
+          {t("systemResourcesRefreshes").replace("{seconds}", "5")} · {" "}
+          {t("systemResourcesSampledAt").replace(
+            "{date}",
+            formatDateTime(data.sampled_at, locale)
+          )}
+        </p>
+      </section>
+      <section
+        aria-label={t("pageTitleSystemResources")}
+        className="grid gap-3 md:grid-cols-2 xl:grid-cols-3"
+      >
+        {metrics.map((metric) => (
+          <Card key={metric.label} className="shadow-none">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                <metric.icon className="size-4 text-muted-foreground" />
+                {metric.label}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-semibold tracking-tight tabular-nums">
+                {metric.value}
+              </p>
+              <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                {metric.detail}
+              </p>
+              {metric.secondaryDetail ? (
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {metric.secondaryDetail}
+                </p>
+              ) : null}
+              {metric.percentage === undefined ? null : (
+                <div
+                  className="mt-4 h-1.5 overflow-hidden rounded-full bg-muted"
+                  role="progressbar"
+                  aria-label={metric.label}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(metric.percentage)}
+                >
+                  <div
+                    className="h-full rounded-full bg-primary transition-[width] duration-200"
+                    style={{
+                      width: `${Math.min(Math.max(metric.percentage, 0), 100)}%`,
+                    }}
+                  />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        ))}
+      </section>
+    </main>
+  )
+}
+
+function SystemResourcesSkeleton() {
+  return (
+    <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 p-4 md:p-6">
+      <section className="max-w-2xl space-y-3">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-5 w-full" />
+      </section>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {Array.from({ length: 5 }, (_, index) => (
+          <Skeleton key={index} className="h-52 rounded-lg" />
+        ))}
+      </div>
+    </main>
+  )
+}
+
 function AdministrationPage({ token }: { token: string }) {
   const { t } = useI18n()
   const aiConfiguration = useQuery({
@@ -1795,12 +1963,50 @@ function formatDate(timestamp: number, locale: Locale) {
   }).format(new Date(timestamp * 1000))
 }
 
+function formatDateTime(timestamp: number, locale: Locale) {
+  return new Intl.DateTimeFormat(locale, {
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(timestamp * 1000))
+}
+
+function formatBytes(bytes: number, locale: Locale) {
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value)} ${units[unit]}`
+}
+
+function formatRate(bytes: number, locale: Locale) {
+  return `${formatBytes(bytes, locale)}/s`
+}
+
+function formatPercentage(value: number, locale: Locale) {
+  return new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 1,
+    style: "percent",
+  }).format(value / 100)
+}
+
 function pageTitle(
   pathname: string,
   t: (
-    key: "pageTitleAdministration" | "pageTitleDocuments" | "pageTitleEditor"
+    key:
+      | "pageTitleAdministration"
+      | "pageTitleDocuments"
+      | "pageTitleEditor"
+      | "pageTitleSystemResources"
   ) => string
 ) {
+  if (pathname === "/admin/system-resources")
+    return t("pageTitleSystemResources")
   if (pathname === "/admin") return t("pageTitleAdministration")
   if (pathname.startsWith("/documents/") && pathname !== "/documents")
     return t("pageTitleEditor")

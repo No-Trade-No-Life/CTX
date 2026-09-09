@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use auth_mini_axum::{AuthMiniLayer, AuthMiniPrincipal};
 use axum::{
     Json, Router,
@@ -20,11 +22,13 @@ use crate::{
         DocumentSave, NewDocument, PublicDocumentDetail, PublicDocumentSummary,
     },
     language::normalize_language_tag,
+    resources::{ResourceError, ResourceMonitor, SystemResourcesSnapshot},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct AppState {
     database: Database,
+    resources: Arc<Mutex<ResourceMonitor>>,
 }
 
 #[derive(RustEmbed)]
@@ -32,7 +36,10 @@ struct AppState {
 struct WebAssets;
 
 pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
-    let state = AppState { database };
+    let state = AppState {
+        resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
+        database,
+    };
     let private = Router::new()
         .route("/me", get(me))
         .route("/setup", post(setup_root))
@@ -48,6 +55,7 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
             get(get_ai_configuration).put(update_ai_configuration),
         )
         .route("/admin/ai/requests", get(list_ai_requests))
+        .route("/admin/system-resources", get(system_resources))
         .route_layer(auth);
     Router::new()
         .route("/api/health", get(health))
@@ -234,6 +242,18 @@ async fn list_ai_requests(
     Ok(Json(state.database.ai_requests()?))
 }
 
+async fn system_resources(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+) -> Result<Json<SystemResourcesSnapshot>, ApiError> {
+    Actor::from_principal(&state.database, &principal)?.assert_root()?;
+    let mut monitor = state
+        .resources
+        .lock()
+        .map_err(|_| ResourceError::Poisoned)?;
+    Ok(Json(monitor.sample()?))
+}
+
 async fn list_public_documents(
     State(state): State<AppState>,
     Query(query): Query<PublicDocumentQuery>,
@@ -416,6 +436,8 @@ enum ApiError {
     Database(#[from] DatabaseError),
     #[error("AI request failed")]
     Ai(#[from] ai::AiError),
+    #[error("system resource request failed")]
+    Resource(#[from] ResourceError),
 }
 
 impl ApiError {
@@ -444,7 +466,7 @@ impl IntoResponse for ApiError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict => StatusCode::CONFLICT,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Database(_) | Self::Ai(_) => StatusCode::BAD_GATEWAY,
+            Self::Database(_) | Self::Ai(_) | Self::Resource(_) => StatusCode::BAD_GATEWAY,
         };
         let message = self.to_string();
         (status, Json(json!({"error": message}))).into_response()
