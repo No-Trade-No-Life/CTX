@@ -4,6 +4,7 @@ mod ai;
 mod crypto;
 mod db;
 mod language;
+mod resources;
 mod web;
 
 use std::net::SocketAddr;

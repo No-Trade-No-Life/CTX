@@ -101,3 +101,43 @@ export type AiRequest = {
   started_at: number | null
   completed_at: number | null
 }
+
+export type SystemResources = {
+  sampled_at: number
+  sample_interval_ms: number
+  cpu: {
+    usage_percent: number
+    load_1m: number
+    logical_cpus: number
+  }
+  memory: {
+    used_bytes: number
+    total_bytes: number
+    available_bytes: number
+    process_used_bytes: number
+    other_used_bytes: number
+    usage_percent: number
+    swap_used_bytes: number
+    swap_total_bytes: number
+  }
+  network: {
+    receive_bytes_per_second: number
+    transmit_bytes_per_second: number
+    interfaces: number
+  }
+  disk: {
+    mount_point: string
+    used_bytes: number
+    total_bytes: number
+    available_bytes: number
+    usage_percent: number
+  } | null
+  sqlite: {
+    main_bytes: number
+    wal_bytes: number
+    shm_bytes: number
+    total_bytes: number
+    freelist_bytes: number
+    freelist_percent: number
+  }
+}

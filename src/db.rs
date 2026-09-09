@@ -250,6 +250,13 @@ pub struct AiRequest {
     pub completed_at: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SqlitePageUsage {
+    pub page_size: u64,
+    pub page_count: u64,
+    pub freelist_count: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct NewDocument<'a> {
     pub author_id: &'a str,
@@ -322,6 +329,20 @@ impl Database {
 
     pub fn database_path(&self) -> PathBuf {
         self.database_path.as_ref().clone()
+    }
+
+    pub fn sqlite_page_usage(&self) -> Result<SqlitePageUsage, DatabaseError> {
+        let connection = self.connection()?;
+        let (page_size, page_count, freelist_count): (i64, i64, i64) = connection.query_row(
+            "SELECT (SELECT * FROM pragma_page_size()), (SELECT * FROM pragma_page_count()), (SELECT * FROM pragma_freelist_count())",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        Ok(SqlitePageUsage {
+            page_size: sqlite_page_value(page_size)?,
+            page_count: sqlite_page_value(page_count)?,
+            freelist_count: sqlite_page_value(freelist_count)?,
+        })
     }
 
     pub fn root_user_id(&self) -> Result<Option<String>, DatabaseError> {
@@ -1475,6 +1496,11 @@ fn ai_request_from_row(row: &Row<'_>) -> rusqlite::Result<AiRequest> {
 
 fn now() -> i64 {
     Utc::now().timestamp()
+}
+
+fn sqlite_page_value(value: i64) -> Result<u64, DatabaseError> {
+    u64::try_from(value)
+        .map_err(|_| DatabaseError::Migration("SQLite page values must be non-negative".to_owned()))
 }
 
 #[cfg(test)]

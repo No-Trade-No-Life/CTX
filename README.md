@@ -26,6 +26,9 @@ public square for anyone to read.
   notice until that localized article is ready.
 - Root administrators can inspect queued, running, successful, and failed
   metadata/translation requests at **Administration → AI request audit**.
+- Root administrators can inspect five-second CPU, memory, network, disk, and
+  SQLite storage snapshots at **Administration → System resources**. This
+  operational view is not exposed to other users.
 
 ## Run locally
 
