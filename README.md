@@ -13,12 +13,13 @@ public square for anyone to read.
   creates a new revision; publishing fixes the current revision as public.
 - A Notion-like block editor that keeps Markdown as the source of truth: rich
   writing, a slash-command menu, selection formatting, GFM tables and task
-  lists, image and link insertion, and an always-available Markdown source
-  view. Mermaid code fences remain Markdown code blocks and keep their
-  language marker when saved.
+  lists, image and link insertion, published-document references, and an
+  always-available Markdown source view. Mermaid code fences remain Markdown
+  code blocks and keep their language marker when saved.
 - A public square at `#/square`, a public article reader at
   `#/p/{document_id}`, and public APIs at `/api/public/documents` and
-  `/api/public/documents/{document_id}`.
+  `/api/public/documents/{document_id}`. A signed-in article author can open
+  its editor directly from the public reader.
 - Root-only OpenAI-compatible routing configuration for `https://openai.ntnl.io/v1`.
   The server encrypts the configured API key with a host-local AES-GCM key; it
   is never returned to the browser.

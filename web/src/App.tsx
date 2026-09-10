@@ -22,6 +22,7 @@ import {
   LoaderCircleIcon,
   MemoryStickIcon,
   NetworkIcon,
+  PencilIcon,
   PlusIcon,
   RefreshCwIcon,
   SaveIcon,
@@ -456,6 +457,10 @@ function NewDocumentPage({ token }: { token: string }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { t } = useI18n()
+  const documents = useQuery({
+    queryKey: ["documents", token],
+    queryFn: () => request<Document[]>("/api/v1/documents", token),
+  })
   const [title, setTitle] = useState("")
   const [sourceLanguage, setSourceLanguage] = useState("und")
   const [content, setContent] = useState("")
@@ -503,6 +508,7 @@ function NewDocumentPage({ token }: { token: string }) {
         title={title}
         sourceLanguage={sourceLanguage}
         content={content}
+        documentReferences={documents.data ?? []}
         onTitleChange={setTitle}
         onSourceLanguageChange={setSourceLanguage}
         onContentChange={setContent}
@@ -556,6 +562,10 @@ function ExistingDocumentEditor({
     detail.document.source_language
   )
   const [content, setContent] = useState(detail.revision.content)
+  const documents = useQuery({
+    queryKey: ["documents", token],
+    queryFn: () => request<Document[]>("/api/v1/documents", token),
+  })
   const isDirty =
     title !== detail.document.title ||
     sourceLanguage !== detail.document.source_language ||
@@ -680,6 +690,8 @@ function ExistingDocumentEditor({
           sourceLanguage={sourceLanguage}
           content={content}
           disabled={isWriting}
+          documentReferences={documents.data ?? []}
+          currentDocumentId={detail.document.id}
           onTitleChange={setTitle}
           onSourceLanguageChange={setSourceLanguage}
           onContentChange={setContent}
@@ -742,6 +754,8 @@ function EditorFields({
   sourceLanguage,
   content,
   disabled = false,
+  documentReferences,
+  currentDocumentId,
   onTitleChange,
   onSourceLanguageChange,
   onContentChange,
@@ -750,6 +764,8 @@ function EditorFields({
   sourceLanguage: string
   content: string
   disabled?: boolean
+  documentReferences?: Document[]
+  currentDocumentId?: string
   onTitleChange: (value: string) => void
   onSourceLanguageChange: (value: string) => void
   onContentChange: (value: string) => void
@@ -791,15 +807,21 @@ function EditorFields({
         value={content}
         disabled={disabled}
         onChange={onContentChange}
+        documentReferences={documentReferences}
+        currentDocumentId={currentDocumentId}
         writeLabel={t("editorWrite")}
         markdownLabel={t("markdown")}
         placeholder={t("editorPlaceholder")}
         commandsLabel={t("editorCommands")}
         insertLinkLabel={t("editorInsertLink")}
+        insertDocumentLinkLabel={t("editorInsertDocument")}
         insertImageLabel={t("editorInsertImage")}
         insertUrlLabel={t("editorInsertUrl")}
         insertLabel={t("editorInsert")}
         cancelLabel={t("cancel")}
+        searchDocumentsLabel={t("editorSearchDocuments")}
+        noReferenceDocumentsLabel={t("editorNoReferenceDocuments")}
+        draftLabel={t("draft")}
       />
       <FieldDescription>{t("markdownDescription")}</FieldDescription>
     </section>
@@ -1245,6 +1267,7 @@ function PublicDocumentPage() {
   const { documentId = "" } = useParams()
   const navigate = useNavigate()
   const { locale, t } = useI18n()
+  const { isReady, isAuthenticated, session } = useAuthMini()
   const document = useQuery({
     queryKey: ["public-document", documentId, locale],
     queryFn: () =>
@@ -1256,6 +1279,11 @@ function PublicDocumentPage() {
       query.state.data?.is_translation_fallback || query.state.data?.metadata_status
         ? 2_000
         : false,
+  })
+  const me = useQuery({
+    queryKey: ["me", session?.accessToken],
+    queryFn: () => request<Me>("/api/v1/me", session?.accessToken ?? undefined),
+    enabled: isReady && isAuthenticated && Boolean(session?.accessToken),
   })
 
   if (document.isPending) return <LoadingPage />
@@ -1296,6 +1324,16 @@ function PublicDocumentPage() {
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <LinkitUserInfo userId={document.data.owner_id} compact />
             <Badge variant="outline">{document.data.language}</Badge>
+            {me.data?.user_id === document.data.owner_id ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate(`/documents/${document.data.id}`)}
+              >
+                <PencilIcon data-icon="inline-start" />
+                {t("editDocument")}
+              </Button>
+            ) : null}
           </div>
           <EditorialMetadata
             metadata={document.data.metadata}
