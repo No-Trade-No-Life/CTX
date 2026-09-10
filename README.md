@@ -11,6 +11,10 @@ public square for anyone to read.
   Markdown revisions.
 - Direct document creation and editing for each authenticated user. Saving
   creates a new revision; publishing fixes the current revision as public.
+- Existing documents save after five seconds of editing inactivity, whenever
+  the editor loses focus, and at least every 15 seconds while changes remain.
+  Every unsaved edit also has a browser-local recovery copy, including a new
+  document before its first explicit creation.
 - A Notion-like block editor that keeps Markdown as the source of truth: rich
   writing, a slash-command menu, selection formatting, GFM tables and task
   lists, image and link insertion, published-document references, and an
