@@ -1212,6 +1212,7 @@ function PublicHeader({ onStartWriting }: { onStartWriting: () => void }) {
         </Button>
         <div className="flex-1" />
         <LanguageSelect />
+        <LinkitMyInfo />
         <Button size="sm" onClick={onStartWriting}>
           <PlusIcon data-icon="inline-start" />
           {t("startWriting")}
