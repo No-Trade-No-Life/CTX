@@ -81,7 +81,7 @@ export type AiRun = {
   id: string
   document_id: string
   source_revision_id: string
-  task: "metadata" | "detect_language"
+  task: "metadata" | "detect_language" | "polish"
   output: string
   proposed_content: string | null
   created_at: number

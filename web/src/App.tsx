@@ -81,6 +81,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { MarkdownEditor } from "@/components/markdown-editor"
 import { Separator } from "@/components/ui/separator"
 import {
   Sidebar,
@@ -106,7 +107,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
 import {
   Tooltip,
   TooltipContent,
@@ -756,42 +756,53 @@ function EditorFields({
 }) {
   const { t } = useI18n()
   return (
-    <FieldGroup>
-      <Field>
-        <FieldLabel htmlFor="document-title">{t("title")}</FieldLabel>
+    <section className="mx-auto flex w-full max-w-4xl flex-col gap-5">
+      <Field className="gap-1">
+        <FieldLabel className="sr-only" htmlFor="document-title">
+          {t("title")}
+        </FieldLabel>
         <Input
           id="document-title"
           value={title}
           placeholder={t("titlePlaceholder")}
           disabled={disabled}
+          className="h-auto rounded-none border-0 bg-transparent px-0 py-1 text-3xl font-semibold tracking-[-0.025em] shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 md:text-4xl"
           onChange={(event) => onTitleChange(event.target.value)}
         />
       </Field>
-      <Field>
-        <FieldLabel htmlFor="document-source-language">
-          {t("sourceLanguage")}
-        </FieldLabel>
-        <Input
-          id="document-source-language"
-          value={sourceLanguage}
-          placeholder={t("sourceLanguagePlaceholder")}
-          disabled={disabled}
-          onChange={(event) => onSourceLanguageChange(event.target.value)}
-        />
-        <FieldDescription>{t("sourceLanguageDescription")}</FieldDescription>
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="document-markdown">{t("markdown")}</FieldLabel>
-        <Textarea
-          id="document-markdown"
-          className="min-h-[28rem] font-mono text-sm leading-6"
-          value={content}
-          disabled={disabled}
-          onChange={(event) => onContentChange(event.target.value)}
-        />
-        <FieldDescription>{t("markdownDescription")}</FieldDescription>
-      </Field>
-    </FieldGroup>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+        <Field className="flex-row items-center gap-2">
+          <FieldLabel htmlFor="document-source-language" className="shrink-0">
+            {t("sourceLanguage")}
+          </FieldLabel>
+          <Input
+            id="document-source-language"
+            value={sourceLanguage}
+            placeholder={t("sourceLanguagePlaceholder")}
+            disabled={disabled}
+            className="h-7 w-24 rounded-md bg-muted/60 text-xs shadow-none"
+            onChange={(event) => onSourceLanguageChange(event.target.value)}
+          />
+        </Field>
+        <span aria-hidden="true">·</span>
+        <span>{t("sourceLanguageDescription")}</span>
+      </div>
+      <MarkdownEditor
+        value={content}
+        disabled={disabled}
+        onChange={onContentChange}
+        writeLabel={t("editorWrite")}
+        markdownLabel={t("markdown")}
+        placeholder={t("editorPlaceholder")}
+        commandsLabel={t("editorCommands")}
+        insertLinkLabel={t("editorInsertLink")}
+        insertImageLabel={t("editorInsertImage")}
+        insertUrlLabel={t("editorInsertUrl")}
+        insertLabel={t("editorInsert")}
+        cancelLabel={t("cancel")}
+      />
+      <FieldDescription>{t("markdownDescription")}</FieldDescription>
+    </section>
   )
 }
 
@@ -855,8 +866,35 @@ function AiPanel({
     },
     onError: showError,
   })
+  const applyPolish = useMutation({
+    mutationFn: () =>
+      request<DocumentDetail>(
+        `/api/v1/documents/${detail.document.id}`,
+        token,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            title: title.trim(),
+            source_language: sourceLanguage.trim(),
+            content: run?.proposed_content ?? content,
+            message: t("appliedAiPolish"),
+          }),
+        }
+      ),
+    onSuccess: () => {
+      toast.success(t("polishSaved"))
+      void queryClient.invalidateQueries({
+        queryKey: ["documents", token],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ["document", token, detail.document.id],
+      })
+    },
+    onError: showError,
+  })
   const needsSaveBeforeAi = isDirty || isSaving || isPublishing
-  const isAiActionPending = ai.isPending || applyMetadata.isPending
+  const isAiActionPending =
+    ai.isPending || applyMetadata.isPending || applyPolish.isPending
   const action = (task: AiRun["task"], label: string) => (
     <Button
       key={task}
@@ -895,6 +933,7 @@ function AiPanel({
                 <AlertDescription>{t("saveBeforeAi")}</AlertDescription>
               </Alert>
             ) : null}
+            {action("polish", t("polishDocument"))}
             {action("metadata", t("extractMetadata"))}
             {action("detect_language", t("detectSourceLanguage"))}
           </div>
@@ -920,6 +959,23 @@ function AiPanel({
                     <SaveIcon data-icon="inline-start" />
                   )}
                   {t("applyMetadata")}
+                </Button>
+              ) : null}
+              {run.task === "polish" && run.proposed_content ? (
+                <Button
+                  variant="outline"
+                  disabled={needsSaveBeforeAi || isAiActionPending}
+                  onClick={() => applyPolish.mutate()}
+                >
+                  {applyPolish.isPending ? (
+                    <LoaderCircleIcon
+                      className="animate-spin"
+                      data-icon="inline-start"
+                    />
+                  ) : (
+                    <SaveIcon data-icon="inline-start" />
+                  )}
+                  {t("applyPolish")}
                 </Button>
               ) : null}
               {run.task === "detect_language" ? (
