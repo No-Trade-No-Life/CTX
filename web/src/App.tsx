@@ -1,8 +1,10 @@
 import {
   Children,
   isValidElement,
+  useCallback,
   useEffect,
   useId,
+  useRef,
   useState,
   type ReactNode,
 } from "react"
@@ -44,6 +46,17 @@ import {
 import { toast } from "sonner"
 
 import { request } from "./lib/api"
+import {
+  clearDocumentDraft,
+  clearNewDocumentDraft,
+  documentDraftFrom,
+  draftsMatch,
+  loadDocumentDraft,
+  loadNewDocumentDraft,
+  saveDocumentDraft,
+  saveNewDocumentDraft,
+  type DocumentDraft,
+} from "./lib/document-drafts"
 import { useI18n, type Locale } from "./lib/i18n"
 import type {
   AiConfiguration,
@@ -461,9 +474,21 @@ function NewDocumentPage({ token }: { token: string }) {
     queryKey: ["documents", token],
     queryFn: () => request<Document[]>("/api/v1/documents", token),
   })
-  const [title, setTitle] = useState("")
-  const [sourceLanguage, setSourceLanguage] = useState("und")
-  const [content, setContent] = useState("")
+  const [recoveredDraft] = useState(loadNewDocumentDraft)
+  const [title, setTitle] = useState(recoveredDraft?.title ?? "")
+  const [sourceLanguage, setSourceLanguage] = useState(
+    recoveredDraft?.sourceLanguage ?? "und"
+  )
+  const [content, setContent] = useState(recoveredDraft?.content ?? "")
+  const updateDraft = (draft: DocumentDraft) => {
+    saveNewDocumentDraft(draft)
+    setTitle(draft.title)
+    setSourceLanguage(draft.sourceLanguage)
+    setContent(draft.content)
+  }
+  useEffect(() => {
+    if (recoveredDraft) toast.info(t("recoveredDocumentDraft"))
+  }, [recoveredDraft, t])
   const create = useMutation({
     mutationFn: () =>
       request<DocumentDetail>("/api/v1/documents", token, {
@@ -473,8 +498,9 @@ function NewDocumentPage({ token }: { token: string }) {
           source_language: sourceLanguage.trim(),
           content,
         }),
-      }),
+    }),
     onSuccess: (detail) => {
+      clearNewDocumentDraft()
       toast.success(t("documentCreated"))
       void queryClient.invalidateQueries({ queryKey: ["documents", token] })
       navigate(`/documents/${detail.document.id}`, { replace: true })
@@ -509,9 +535,15 @@ function NewDocumentPage({ token }: { token: string }) {
         sourceLanguage={sourceLanguage}
         content={content}
         documentReferences={documents.data ?? []}
-        onTitleChange={setTitle}
-        onSourceLanguageChange={setSourceLanguage}
-        onContentChange={setContent}
+        onTitleChange={(value) =>
+          updateDraft(documentDraftFrom(value, sourceLanguage, content))
+        }
+        onSourceLanguageChange={(value) =>
+          updateDraft(documentDraftFrom(title, value, content))
+        }
+        onContentChange={(value) =>
+          updateDraft(documentDraftFrom(title, sourceLanguage, value))
+        }
       />
     </main>
   )
@@ -540,7 +572,6 @@ function ExistingDocumentPage({ token }: { token: string }) {
 
   return (
     <ExistingDocumentEditor
-      key={document.data.revision.id}
       token={token}
       detail={document.data}
     />
@@ -557,57 +588,110 @@ function ExistingDocumentEditor({
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { t } = useI18n()
-  const [title, setTitle] = useState(detail.document.title)
-  const [sourceLanguage, setSourceLanguage] = useState(
-    detail.document.source_language
+  const savedServerDraft = documentDraftFrom(
+    detail.document.title,
+    detail.document.source_language,
+    detail.revision.content
   )
-  const [content, setContent] = useState(detail.revision.content)
+  const [recoveredDraft] = useState(() =>
+    loadDocumentDraft(detail.document.id, detail.revision.id)
+  )
+  const initialDraft = recoveredDraft ?? savedServerDraft
+  const [title, setTitle] = useState(initialDraft.title)
+  const [sourceLanguage, setSourceLanguage] = useState(
+    initialDraft.sourceLanguage
+  )
+  const [content, setContent] = useState(initialDraft.content)
+  const [savedDraft, setSavedDraft] = useState(savedServerDraft)
+  const [savedRevisionId, setSavedRevisionId] = useState(detail.revision.id)
+  const [autosaveFailed, setAutosaveFailed] = useState(false)
+  const draftRef = useRef(initialDraft)
+  const savedDraftRef = useRef(savedServerDraft)
+  const savedRevisionRef = useRef(detail.revision.id)
   const documents = useQuery({
     queryKey: ["documents", token],
     queryFn: () => request<Document[]>("/api/v1/documents", token),
   })
-  const isDirty =
-    title !== detail.document.title ||
-    sourceLanguage !== detail.document.source_language ||
-    content !== detail.revision.content
-  const saveCurrentRevision = () =>
-    request<DocumentDetail>(`/api/v1/documents/${detail.document.id}`, token, {
-      method: "PUT",
-      body: JSON.stringify({
-        title: title.trim(),
-        source_language: sourceLanguage.trim(),
-        content,
-      }),
-    })
-  const save = useMutation({
-    mutationFn: saveCurrentRevision,
-    onSuccess: () => {
-      toast.success(t("savedNewRevision"))
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
-      void queryClient.invalidateQueries({
-        queryKey: ["document", token, detail.document.id],
-      })
+  const currentDraft = documentDraftFrom(title, sourceLanguage, content)
+  const isDirty = !draftsMatch(currentDraft, savedDraft)
+  const updateDraft = useCallback(
+    (draft: DocumentDraft) => {
+      draftRef.current = draft
+      saveDocumentDraft(
+        detail.document.id,
+        savedRevisionRef.current,
+        draft
+      )
+      setTitle(draft.title)
+      setSourceLanguage(draft.sourceLanguage)
+      setContent(draft.content)
     },
-    onError: (error) => {
+    [detail.document.id]
+  )
+  const saveCurrentRevision = useCallback(
+    (draft: DocumentDraft) =>
+      request<DocumentDetail>(`/api/v1/documents/${detail.document.id}`, token, {
+        method: "PUT",
+        body: JSON.stringify({
+          title: draft.title.trim(),
+          source_language: draft.sourceLanguage.trim(),
+          content: draft.content,
+        }),
+      }),
+    [detail.document.id, token]
+  )
+  const markSaved = useCallback(
+    (savedDetail: DocumentDetail, saved: DocumentDraft) => {
+      savedDraftRef.current = saved
+      savedRevisionRef.current = savedDetail.revision.id
+      setSavedDraft(saved)
+      setSavedRevisionId(savedDetail.revision.id)
+      setAutosaveFailed(false)
+      queryClient.setQueryData<DocumentDetail>(
+        ["document", token, detail.document.id],
+        savedDetail
+      )
       void queryClient.invalidateQueries({ queryKey: ["documents", token] })
-      void queryClient.invalidateQueries({
-        queryKey: ["document", token, detail.document.id],
-      })
-      showError(error)
+      if (draftsMatch(draftRef.current, saved))
+        clearDocumentDraft(detail.document.id)
+      else
+        saveDocumentDraft(
+          detail.document.id,
+          savedDetail.revision.id,
+          draftRef.current
+        )
+    },
+    [detail.document.id, queryClient, token]
+  )
+  const save = useMutation({
+    mutationFn: ({ draft }: { draft: DocumentDraft; notify: boolean }) =>
+      saveCurrentRevision(draft),
+    onSuccess: (savedDetail, { draft, notify }) => {
+      markSaved(savedDetail, draft)
+      if (notify) toast.success(t("savedNewRevision"))
+    },
+    onError: (error, { notify }) => {
+      setAutosaveFailed(true)
+      if (notify) showError(error)
     },
   })
   const publish = useMutation({
     mutationFn: async () => {
-      if (isDirty) await saveCurrentRevision()
-      return request<Document>(
+      const draft = draftRef.current
+      const savedDetail = draftsMatch(draft, savedDraftRef.current)
+        ? null
+        : await saveCurrentRevision(draft)
+      await request<Document>(
         `/api/v1/documents/${detail.document.id}/publish`,
         token,
         {
           method: "POST",
         }
       )
+      return { draft, savedDetail }
     },
-    onSuccess: () => {
+    onSuccess: ({ draft, savedDetail }) => {
+      if (savedDetail) markSaved(savedDetail, draft)
       toast.success(t("publishedCurrentRevision"))
       void queryClient.invalidateQueries({ queryKey: ["documents", token] })
       void queryClient.invalidateQueries({
@@ -623,8 +707,95 @@ function ExistingDocumentEditor({
       showError(error)
     },
   })
+  const saveMutationRef = useRef(save.mutate)
+  const publishMutationRef = useRef(publish.mutate)
+  const savePendingRef = useRef(save.isPending)
+  const publishPendingRef = useRef(publish.isPending)
+  useEffect(() => {
+    saveMutationRef.current = save.mutate
+    savePendingRef.current = save.isPending
+  }, [save.isPending, save.mutate])
+  useEffect(() => {
+    publishMutationRef.current = publish.mutate
+    publishPendingRef.current = publish.isPending
+  }, [publish.isPending, publish.mutate])
+  const saveIfNeeded = useCallback(
+    (notify = false) => {
+      const draft = draftRef.current
+      if (
+        !draft.title.trim() ||
+        savePendingRef.current ||
+        publishPendingRef.current ||
+        draftsMatch(draft, savedDraftRef.current)
+      )
+        return
+      savePendingRef.current = true
+      saveMutationRef.current({ draft, notify })
+    },
+    []
+  )
+  const publishCurrentRevision = useCallback(() => {
+    if (savePendingRef.current || publishPendingRef.current) return
+    publishPendingRef.current = true
+    publishMutationRef.current()
+  }, [])
+  const saveAfterBlur = useCallback(() => {
+    window.setTimeout(() => saveIfNeeded(), 0)
+  }, [saveIfNeeded])
+  useEffect(() => {
+    if (recoveredDraft) toast.info(t("recoveredDocumentDraft"))
+  }, [recoveredDraft, t])
+  useEffect(() => {
+    const timeout = window.setTimeout(() => saveIfNeeded(), 5_000)
+    return () => window.clearTimeout(timeout)
+  }, [content, saveIfNeeded, sourceLanguage, title])
+  useEffect(() => {
+    const interval = window.setInterval(() => saveIfNeeded(), 15_000)
+    return () => window.clearInterval(interval)
+  }, [saveIfNeeded])
+  useEffect(() => {
+    const saveWhenHidden = () => {
+      if (document.visibilityState === "hidden") saveIfNeeded()
+    }
+    document.addEventListener("visibilitychange", saveWhenHidden)
+    return () => document.removeEventListener("visibilitychange", saveWhenHidden)
+  }, [saveIfNeeded])
+  useEffect(() => {
+    if (
+      detail.revision.id === savedRevisionRef.current ||
+      !draftsMatch(draftRef.current, savedDraftRef.current)
+    )
+      return
+    const nextDraft = documentDraftFrom(
+      detail.document.title,
+      detail.document.source_language,
+      detail.revision.content
+    )
+    draftRef.current = nextDraft
+    savedDraftRef.current = nextDraft
+    savedRevisionRef.current = detail.revision.id
+    setTitle(nextDraft.title)
+    setSourceLanguage(nextDraft.sourceLanguage)
+    setContent(nextDraft.content)
+    setSavedDraft(nextDraft)
+    setSavedRevisionId(detail.revision.id)
+    clearDocumentDraft(detail.document.id)
+  }, [
+    detail.document.id,
+    detail.document.source_language,
+    detail.document.title,
+    detail.revision.content,
+    detail.revision.id,
+  ])
   const isPublished = detail.document.status === "published"
   const isWriting = save.isPending || publish.isPending
+  const autosaveStatus = isWriting
+    ? t("autosaving")
+    : autosaveFailed
+      ? t("autosaveFailed")
+      : isDirty
+        ? t("autosavePending")
+        : t("autosaved")
 
   return (
     <main className="mx-auto grid w-full max-w-7xl gap-8 p-4 md:p-6 xl:grid-cols-[minmax(0,1fr)_19rem]">
@@ -637,10 +808,19 @@ function ExistingDocumentEditor({
               <Badge variant={isPublished ? "secondary" : "outline"}>
                 {isPublished ? t("published") : t("draft")}
               </Badge>
+              <span
+                role="status"
+                className="inline-flex text-xs text-muted-foreground"
+              >
+                {save.isPending ? (
+                  <LoaderCircleIcon className="mr-1 size-3 animate-spin" />
+                ) : null}
+                {autosaveStatus}
+              </span>
               <Button
                 variant="outline"
-                disabled={isWriting || !title.trim()}
-                onClick={() => save.mutate()}
+                disabled={isWriting || !title.trim() || !isDirty}
+                onClick={() => saveIfNeeded(true)}
               >
                 {save.isPending ? (
                   <LoaderCircleIcon
@@ -654,7 +834,7 @@ function ExistingDocumentEditor({
               </Button>
               <Button
                 disabled={isWriting || !title.trim()}
-                onClick={() => publish.mutate()}
+                onClick={publishCurrentRevision}
               >
                 {publish.isPending ? (
                   <LoaderCircleIcon
@@ -671,7 +851,7 @@ function ExistingDocumentEditor({
         />
         <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
           <span>{t("revision")}</span>
-          <span className="font-mono">{detail.revision.id.slice(0, 8)}</span>
+          <span className="font-mono">{savedRevisionId.slice(0, 8)}</span>
           {isPublished ? (
             <Button
               variant="link"
@@ -689,12 +869,19 @@ function ExistingDocumentEditor({
           title={title}
           sourceLanguage={sourceLanguage}
           content={content}
-          disabled={isWriting}
+          disabled={publish.isPending}
           documentReferences={documents.data ?? []}
           currentDocumentId={detail.document.id}
-          onTitleChange={setTitle}
-          onSourceLanguageChange={setSourceLanguage}
-          onContentChange={setContent}
+          onTitleChange={(value) =>
+            updateDraft(documentDraftFrom(value, sourceLanguage, content))
+          }
+          onSourceLanguageChange={(value) =>
+            updateDraft(documentDraftFrom(title, value, content))
+          }
+          onContentChange={(value) =>
+            updateDraft(documentDraftFrom(title, sourceLanguage, value))
+          }
+          onBlur={saveAfterBlur}
         />
       </section>
       <aside className="min-w-0 xl:pt-14">
@@ -709,7 +896,9 @@ function ExistingDocumentEditor({
           title={title}
           sourceLanguage={sourceLanguage}
           content={content}
-          onSourceLanguageChange={setSourceLanguage}
+          onSourceLanguageChange={(value) =>
+            updateDraft(documentDraftFrom(title, value, content))
+          }
           isDirty={isDirty}
           isSaving={save.isPending}
           isPublishing={publish.isPending}
@@ -759,6 +948,7 @@ function EditorFields({
   onTitleChange,
   onSourceLanguageChange,
   onContentChange,
+  onBlur,
 }: {
   title: string
   sourceLanguage: string
@@ -769,10 +959,16 @@ function EditorFields({
   onTitleChange: (value: string) => void
   onSourceLanguageChange: (value: string) => void
   onContentChange: (value: string) => void
+  onBlur?: () => void
 }) {
   const { t } = useI18n()
   return (
-    <section className="mx-auto flex w-full max-w-4xl flex-col gap-5">
+    <section
+      className="mx-auto flex w-full max-w-4xl flex-col gap-5"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) onBlur?.()
+      }}
+    >
       <Field className="gap-1">
         <FieldLabel className="sr-only" htmlFor="document-title">
           {t("title")}
