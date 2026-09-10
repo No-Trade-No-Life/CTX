@@ -28,6 +28,7 @@ import {
   BoldIcon,
   Code2Icon,
   FileCode2Icon,
+  FileTextIcon,
   Heading1Icon,
   Heading2Icon,
   Heading3Icon,
@@ -54,19 +55,31 @@ import { cn } from "@/lib/utils"
 type EditorMode = "write" | "markdown"
 type EmbedKind = "image" | "link"
 
+type DocumentReference = {
+  id: string
+  title: string
+  status: "draft" | "published"
+}
+
 type MarkdownEditorProps = {
   value: string
   disabled?: boolean
   onChange: (value: string) => void
+  documentReferences?: DocumentReference[]
+  currentDocumentId?: string
   writeLabel: string
   markdownLabel: string
   placeholder: string
   commandsLabel: string
   insertLinkLabel: string
+  insertDocumentLinkLabel: string
   insertImageLabel: string
   insertUrlLabel: string
   insertLabel: string
   cancelLabel: string
+  searchDocumentsLabel: string
+  noReferenceDocumentsLabel: string
+  draftLabel: string
 }
 
 type SlashCommand = {
@@ -217,19 +230,27 @@ export function MarkdownEditor({
   value,
   disabled = false,
   onChange,
+  documentReferences = [],
+  currentDocumentId,
   writeLabel,
   markdownLabel,
   placeholder,
   commandsLabel,
   insertLinkLabel,
+  insertDocumentLinkLabel,
   insertImageLabel,
   insertUrlLabel,
   insertLabel,
   cancelLabel,
+  searchDocumentsLabel,
+  noReferenceDocumentsLabel,
+  draftLabel,
 }: MarkdownEditorProps) {
   const [mode, setMode] = useState<EditorMode>("write")
   const [embedKind, setEmbedKind] = useState<EmbedKind | null>(null)
   const [embedUrl, setEmbedUrl] = useState("")
+  const [isDocumentPickerOpen, setIsDocumentPickerOpen] = useState(false)
+  const [documentQuery, setDocumentQuery] = useState("")
   const [slashMenu, setSlashMenu] = useState<SlashMenu | null>(null)
   const editor = useEditor(
     {
@@ -322,6 +343,15 @@ export function MarkdownEditor({
     )
   }, [slashMenu?.query])
 
+  const referenceDocuments = useMemo(() => {
+    const query = documentQuery.trim().toLocaleLowerCase()
+    return documentReferences.filter(
+      (document) =>
+        document.id !== currentDocumentId &&
+        document.title.toLocaleLowerCase().includes(query)
+    )
+  }, [currentDocumentId, documentQuery, documentReferences])
+
   const runSlashCommand = useCallback(
     (command: SlashCommand) => {
       if (!editor || !slashMenu) return
@@ -356,6 +386,40 @@ export function MarkdownEditor({
     chain.run()
     setEmbedUrl("")
     setEmbedKind(null)
+  }
+
+  const insertDocumentReference = (document: DocumentReference) => {
+    if (!editor || document.status !== "published") return
+    editor
+      .chain()
+      .focus()
+      .insertContent({
+        type: "text",
+        text: document.title,
+        marks: [
+          {
+            type: "link",
+            attrs: {
+              href: `/#/p/${document.id}`,
+              target: null,
+              rel: "noreferrer",
+            },
+          },
+        ],
+      })
+      .run()
+    setDocumentQuery("")
+    setIsDocumentPickerOpen(false)
+  }
+
+  const openEmbedForm = (kind: EmbedKind) => {
+    setIsDocumentPickerOpen(false)
+    setEmbedKind(kind)
+  }
+
+  const openDocumentPicker = () => {
+    setEmbedKind(null)
+    setIsDocumentPickerOpen(true)
   }
 
   if (!editor || !editorState) return null
@@ -494,13 +558,20 @@ export function MarkdownEditor({
           <ToolbarSeparator />
           <EditorButton
             label={insertLinkLabel}
-            onClick={() => setEmbedKind("link")}
+            onClick={() => openEmbedForm("link")}
           >
             <LinkIcon />
           </EditorButton>
           <EditorButton
+            active={isDocumentPickerOpen}
+            label={insertDocumentLinkLabel}
+            onClick={openDocumentPicker}
+          >
+            <FileTextIcon />
+          </EditorButton>
+          <EditorButton
             label={insertImageLabel}
-            onClick={() => setEmbedKind("image")}
+            onClick={() => openEmbedForm("image")}
           >
             <ImageIcon />
           </EditorButton>
@@ -560,6 +631,63 @@ export function MarkdownEditor({
         </div>
       ) : null}
 
+      {isDocumentPickerOpen ? (
+        <div className="border-b bg-muted px-3 py-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              autoFocus
+              aria-label={searchDocumentsLabel}
+              placeholder={searchDocumentsLabel}
+              value={documentQuery}
+              disabled={disabled}
+              onChange={(event) => setDocumentQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setIsDocumentPickerOpen(false)
+              }}
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setIsDocumentPickerOpen(false)}
+            >
+              {cancelLabel}
+            </Button>
+          </div>
+          <div
+            aria-label={insertDocumentLinkLabel}
+            className="mt-2 max-h-56 overflow-y-auto rounded-md border bg-background p-1"
+          >
+            {referenceDocuments.length === 0 ? (
+              <p className="px-2 py-2 text-sm text-muted-foreground">
+                {noReferenceDocumentsLabel}
+              </p>
+            ) : (
+              referenceDocuments.map((document) => {
+                const isPublished = document.status === "published"
+                return (
+                  <Button
+                    key={document.id}
+                    type="button"
+                    variant="ghost"
+                    disabled={!isPublished || disabled}
+                    className="h-auto w-full justify-between gap-3 px-2 py-2 text-left"
+                    onClick={() => insertDocumentReference(document)}
+                  >
+                    <span className="min-w-0 truncate">{document.title}</span>
+                    {!isPublished ? (
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {draftLabel}
+                      </span>
+                    ) : null}
+                  </Button>
+                )
+              })
+            )}
+          </div>
+        </div>
+      ) : null}
+
       {mode === "write" ? (
         <>
           <EditorContent editor={editor} className="markdown-editor__canvas" />
@@ -591,7 +719,7 @@ export function MarkdownEditor({
             </EditorButton>
             <EditorButton
               label={insertLinkLabel}
-              onClick={() => setEmbedKind("link")}
+              onClick={() => openEmbedForm("link")}
             >
               <LinkIcon />
             </EditorButton>
