@@ -89,6 +89,268 @@
     isolation: isolate;
 }
 
+.markdown-editor {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
+.markdown-editor__toolbar {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in oklch, var(--background), var(--muted) 28%);
+  padding: 0.25rem 0.5rem;
+}
+
+.markdown-editor__embed-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+  padding: 0.5rem 0.75rem;
+}
+
+.markdown-editor__canvas {
+  min-height: 32rem;
+  cursor: text;
+}
+
+.markdown-editor__canvas .tiptap {
+  min-height: 32rem;
+  outline: none;
+  padding-block: 2rem 3rem;
+}
+
+.markdown-editor__canvas .tiptap > * {
+  max-width: 72ch;
+  margin-inline: auto;
+  padding-inline: 1.25rem;
+}
+
+.markdown-editor__canvas .tiptap > * + * {
+  margin-top: 1rem;
+}
+
+.markdown-editor__canvas .tiptap p,
+.markdown-editor__canvas .tiptap li {
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+.markdown-editor__canvas .tiptap h1,
+.markdown-editor__canvas .tiptap h2,
+.markdown-editor__canvas .tiptap h3 {
+  color: var(--foreground);
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+.markdown-editor__canvas .tiptap h1 {
+  font-size: 2rem;
+  margin-top: 2.5rem;
+}
+
+.markdown-editor__canvas .tiptap h2 {
+  font-size: 1.5rem;
+  margin-top: 2rem;
+}
+
+.markdown-editor__canvas .tiptap h3 {
+  font-size: 1.25rem;
+  margin-top: 1.5rem;
+}
+
+.markdown-editor__canvas .tiptap ul,
+.markdown-editor__canvas .tiptap ol {
+  padding-left: 2.1rem;
+}
+
+.markdown-editor__canvas .tiptap ul {
+  list-style: disc;
+}
+
+.markdown-editor__canvas .tiptap ol {
+  list-style: decimal;
+}
+
+.markdown-editor__canvas .tiptap li + li {
+  margin-top: 0.25rem;
+}
+
+.markdown-editor__canvas .tiptap ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+
+.markdown-editor__canvas .tiptap li[data-type="taskItem"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.markdown-editor__canvas .tiptap li[data-type="taskItem"] > label {
+  margin-top: 0.42rem;
+}
+
+.markdown-editor__canvas .tiptap li[data-type="taskItem"] > div {
+  flex: 1;
+}
+
+.markdown-editor__canvas .tiptap a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+.markdown-editor__canvas .tiptap blockquote {
+  background: var(--muted);
+  border-radius: var(--radius-md);
+  color: color-mix(in oklch, var(--foreground), var(--muted-foreground) 32%);
+  padding-block: 0.75rem;
+}
+
+.markdown-editor__canvas .tiptap blockquote p {
+  font-size: 1.05rem;
+}
+
+.markdown-editor__canvas .tiptap code {
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.1em 0.28em;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+
+.markdown-editor__canvas .tiptap pre {
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--foreground), var(--background) 7%);
+  color: var(--background);
+  padding: 1rem 1.25rem;
+}
+
+.markdown-editor__canvas .tiptap pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.markdown-editor__canvas .tiptap hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin-block: 2.5rem;
+}
+
+.markdown-editor__canvas .tiptap img {
+  display: block;
+  width: auto;
+  max-width: min(100%, 46rem);
+  height: auto;
+  margin-block: 1.5rem;
+  border-radius: var(--radius-md);
+}
+
+.markdown-editor__canvas .tiptap table {
+  width: calc(100% - 2.5rem);
+  border-collapse: collapse;
+  margin-block: 1.5rem;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+}
+
+.markdown-editor__canvas .tiptap th,
+.markdown-editor__canvas .tiptap td {
+  min-width: 7rem;
+  border: 1px solid var(--border);
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-editor__canvas .tiptap th {
+  background: var(--muted);
+  font-weight: 600;
+}
+
+.markdown-editor__canvas .tiptap p.is-editor-empty:first-child::before {
+  float: left;
+  height: 0;
+  color: var(--muted-foreground);
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.markdown-editor__bubble-menu,
+.markdown-editor__slash-menu {
+  z-index: 50;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: 0 0.25rem 0.5rem color-mix(in oklch, var(--foreground), transparent 88%);
+}
+
+.markdown-editor__bubble-menu {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.18rem;
+}
+
+.markdown-editor__slash-menu {
+  position: fixed;
+  width: 18rem;
+}
+
+.markdown-editor__source {
+  resize: vertical;
+  padding: 1.25rem;
+}
+
+@media (max-width: 40rem) {
+  .markdown-editor__toolbar {
+    align-items: flex-start;
+  }
+
+  .markdown-editor__embed-form {
+    flex-wrap: wrap;
+  }
+
+  .markdown-editor__embed-form input {
+    flex-basis: 100%;
+  }
+
+  .markdown-editor__canvas,
+  .markdown-editor__canvas .tiptap {
+    min-height: 28rem;
+  }
+
+  .markdown-editor__canvas .tiptap {
+    padding-block: 1.5rem 2rem;
+  }
+
+  .markdown-editor__canvas .tiptap > * {
+    padding-inline: 1rem;
+  }
+
+  .markdown-editor__canvas .tiptap h1 {
+    font-size: 1.75rem;
+  }
+
+  .markdown-editor__canvas .tiptap table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
 .dark {
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);

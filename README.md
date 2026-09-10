@@ -11,6 +11,11 @@ public square for anyone to read.
   Markdown revisions.
 - Direct document creation and editing for each authenticated user. Saving
   creates a new revision; publishing fixes the current revision as public.
+- A Notion-like block editor that keeps Markdown as the source of truth: rich
+  writing, a slash-command menu, selection formatting, GFM tables and task
+  lists, image and link insertion, and an always-available Markdown source
+  view. Mermaid code fences remain Markdown code blocks and keep their
+  language marker when saved.
 - A public square at `#/square`, a public article reader at
   `#/p/{document_id}`, and public APIs at `/api/public/documents` and
   `/api/public/documents/{document_id}`.
@@ -26,6 +31,8 @@ public square for anyone to read.
   notice until that localized article is ready.
 - Root administrators can inspect queued, running, successful, and failed
   metadata/translation requests at **Administration → AI request audit**.
+- Authors can ask AI to polish a saved document and review the proposed
+  Markdown before explicitly saving it as a new immutable revision.
 - Root administrators can inspect five-second CPU, memory, network, disk, and
   SQLite storage snapshots at **Administration → System resources**. This
   operational view is not exposed to other users.

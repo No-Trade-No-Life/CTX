@@ -201,7 +201,7 @@ async fn run_ai_task(
         &document.revision.id,
         input.task.as_str(),
         &output.output,
-        None,
+        output.proposed_content.as_deref(),
     )?))
 }
 

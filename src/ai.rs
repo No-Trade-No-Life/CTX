@@ -14,6 +14,7 @@ use crate::{
 pub enum AiTask {
     Metadata,
     DetectLanguage,
+    Polish,
 }
 
 impl AiTask {
@@ -21,6 +22,7 @@ impl AiTask {
         match self {
             Self::Metadata => "metadata",
             Self::DetectLanguage => "detect_language",
+            Self::Polish => "polish",
         }
     }
 }
@@ -28,6 +30,7 @@ impl AiTask {
 #[derive(Clone, Debug)]
 pub struct AiOutput {
     pub output: String,
+    pub proposed_content: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -97,7 +100,11 @@ pub async fn run(
         document.document.title, document.revision.content
     );
     let output = request_output(credentials, &system, &content).await?;
-    Ok(AiOutput { output })
+    let proposed_content = matches!(task, AiTask::Polish).then(|| output.clone());
+    Ok(AiOutput {
+        output,
+        proposed_content,
+    })
 }
 
 pub async fn translate_document(
@@ -354,6 +361,7 @@ fn system_prompt(task: &AiTask) -> String {
     match task {
         AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, and audience. Preserve the author's factual claims and do not invent sources.".to_owned(),
         AiTask::DetectLanguage => "You are CTX's language detector. Read the document title and Markdown, then return only its original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES. Do not add explanation, punctuation, or Markdown. If the language cannot be determined, return und.".to_owned(),
+        AiTask::Polish => "You are CTX's Markdown editing assistant. Polish the complete document for clarity, flow, precision, and concise professional tone while preserving the author's facts, intent, and voice. Return only the revised GitHub Flavored Markdown. Preserve every Markdown structure and meaning: headings, links and URLs, inline code, code blocks, Mermaid syntax, images, task lists, tables, HTML, frontmatter, and formulas. Do not add sources, claims, or editorial commentary.".to_owned(),
     }
 }
 
@@ -362,8 +370,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        metadata_from_output, output_text_from_sse, request_body, translation_from_output,
-        translation_instructions,
+        AiTask, metadata_from_output, output_text_from_sse, request_body, system_prompt,
+        translation_from_output, translation_instructions,
     };
 
     #[test]
@@ -432,6 +440,14 @@ mod tests {
         );
         assert!(instructions.contains("Do not leave Mermaid labels in the source language"));
         assert!(instructions.contains("です・ます"));
+    }
+
+    #[test]
+    fn polish_task_returns_a_markdown_preserving_instruction() {
+        let prompt = system_prompt(&AiTask::Polish);
+        assert_eq!(AiTask::Polish.as_str(), "polish");
+        assert!(prompt.contains("Return only the revised GitHub Flavored Markdown"));
+        assert!(prompt.contains("Mermaid syntax"));
     }
 
     #[test]
