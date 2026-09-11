@@ -1549,7 +1549,7 @@ fn backfill_published_metadata_requests(connection: &mut Connection) -> Result<(
 }
 
 fn backfill_profile_summaries(connection: &mut Connection) -> Result<(), DatabaseError> {
-    const PROFILE_SUMMARY_VERSION: &str = "3";
+    const PROFILE_SUMMARY_VERSION: &str = "4";
     let version: Option<String> = connection
         .query_row(
             "SELECT value FROM app_meta WHERE key = 'profile_summary_version'",
