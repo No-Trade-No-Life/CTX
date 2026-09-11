@@ -66,7 +66,7 @@ const CURRENT_TABLES_SQL: &str = "
         id TEXT PRIMARY KEY NOT NULL,
         document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
         source_revision_id TEXT NOT NULL REFERENCES document_revisions(id),
-        task TEXT NOT NULL CHECK(task IN ('metadata', 'translate')),
+        task TEXT NOT NULL CHECK(task IN ('metadata', 'translate', 'profile_experience', 'profile_personality', 'profile_mbti', 'profile_schwartz', 'profile_motivations', 'profile_philosophy', 'profile_timeline')),
         target_language TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
         result_summary TEXT,
@@ -348,6 +348,16 @@ pub struct AiRequest {
     pub completed_at: Option<i64>,
 }
 
+pub const PROFILE_SUMMARY_TASKS: [&str; 7] = [
+    "profile_experience",
+    "profile_personality",
+    "profile_mbti",
+    "profile_schwartz",
+    "profile_motivations",
+    "profile_philosophy",
+    "profile_timeline",
+];
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DocumentComment {
     pub id: String,
@@ -439,6 +449,7 @@ impl Database {
         migrate_legacy_context_schema(&mut connection)?;
         add_direct_document_columns_if_needed(&connection)?;
         connection.execute_batch(CURRENT_TABLES_SQL)?;
+        migrate_ai_request_task_constraint(&mut connection)?;
         connection.execute_batch(CURRENT_INDEXES_SQL)?;
         connection.execute("DROP TABLE IF EXISTS author_language_preferences", [])?;
         backfill_published_source_languages(&connection)?;
@@ -754,7 +765,11 @@ impl Database {
             "",
             updated_at,
         )?;
-        if detail.document.kind == "article" {
+        if detail.document.kind == "profile" {
+            for task in PROFILE_SUMMARY_TASKS {
+                enqueue_ai_request(&transaction, id, source_revision_id, task, "", updated_at)?;
+            }
+        } else {
             force_enqueue_author_profile_metadata(
                 &transaction,
                 &detail.document.owner_id,
@@ -769,6 +784,120 @@ impl Database {
         detail.document.published_source_language = Some(source_language);
         detail.document.updated_at = updated_at;
         Ok(Some(detail.document))
+    }
+
+    pub fn enqueue_profile_summary_tasks(
+        &self,
+        document_id: &str,
+        source_revision_id: &str,
+        task: Option<&str>,
+    ) -> Result<Vec<String>, DatabaseError> {
+        let tasks = match task {
+            None | Some("all") => PROFILE_SUMMARY_TASKS.to_vec(),
+            Some(task) if PROFILE_SUMMARY_TASKS.contains(&task) => vec![task],
+            Some(_) => return Ok(vec![]),
+        };
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        for task in &tasks {
+            force_enqueue_ai_request(
+                &transaction,
+                document_id,
+                source_revision_id,
+                task,
+                "",
+                now(),
+            )?;
+        }
+        transaction.commit()?;
+        Ok(tasks.into_iter().map(str::to_owned).collect())
+    }
+
+    pub fn schedule_profile_summary_tasks_if_due(&self) -> Result<(), DatabaseError> {
+        let schedule_day = Utc::now().date_naive().to_string();
+        let mut connection = self.connection()?;
+        let previous_day: Option<String> = connection
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = 'profile_summary_schedule_day'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if previous_day.as_deref() == Some(schedule_day.as_str()) {
+            return Ok(());
+        }
+        let transaction = connection.transaction()?;
+        let profiles = {
+            let mut statement = transaction.prepare(
+                "SELECT id, published_revision_id, published_source_language FROM documents WHERE document_kind = 'profile' AND status = 'published' AND visibility = 'public' AND published_revision_id IS NOT NULL",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (document_id, source_revision_id, source_language) in profiles {
+            if source_language
+                .as_deref()
+                .is_none_or(|language| language == "und")
+            {
+                force_enqueue_ai_request(
+                    &transaction,
+                    &document_id,
+                    &source_revision_id,
+                    "metadata",
+                    "",
+                    now(),
+                )?;
+            }
+            for task in PROFILE_SUMMARY_TASKS {
+                force_enqueue_ai_request(
+                    &transaction,
+                    &document_id,
+                    &source_revision_id,
+                    task,
+                    "",
+                    now(),
+                )?;
+            }
+        }
+        transaction.execute(
+            "INSERT INTO app_meta(key, value) VALUES ('profile_summary_schedule_day', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [schedule_day],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn apply_profile_summary(
+        &self,
+        document_id: &str,
+        source_revision_id: &str,
+        source_language: &str,
+        metadata: &PublishedMetadata,
+    ) -> Result<bool, DatabaseError> {
+        let metadata_json = serde_json::to_string(metadata)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE documents SET metadata_json = ?3, updated_at = ?4 WHERE id = ?1 AND published_revision_id = ?2 AND document_kind = 'profile' AND status = 'published' AND visibility = 'public'",
+            params![document_id, source_revision_id, metadata_json, now()],
+        )?;
+        if changed == 0 {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        transaction.execute(
+            "INSERT INTO document_metadata(document_id, language, source_revision_id, metadata_json, published_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(document_id, language) DO UPDATE SET source_revision_id = excluded.source_revision_id, metadata_json = excluded.metadata_json, published_at = excluded.published_at",
+            params![document_id, source_language, source_revision_id, metadata_json, now()],
+        )?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     pub fn requeue_running_ai_requests(&self) -> Result<(), DatabaseError> {
@@ -1264,6 +1393,16 @@ fn force_enqueue_author_profile_metadata(
             "",
             created_at,
         )?;
+        for task in PROFILE_SUMMARY_TASKS {
+            force_enqueue_ai_request(
+                transaction,
+                &document_id,
+                &source_revision_id,
+                task,
+                "",
+                created_at,
+            )?;
+        }
     }
     Ok(())
 }
@@ -1418,6 +1557,12 @@ fn public_document_detail(
         })
         .transpose()?
         .flatten();
+    let metadata_status = match metadata_status {
+        Some(status) => Some(status),
+        None => {
+            profile_summary_status(connection, &publication.id, &publication.source_revision_id)?
+        }
+    };
     let translation_fallback = content_fallback || is_metadata_fallback;
     let translation_status = if translation_fallback {
         target_language
@@ -1462,6 +1607,21 @@ fn public_document_detail(
         is_translation_fallback: translation_fallback,
         published_at: publication.published_at,
     })
+}
+
+fn profile_summary_status(
+    connection: &Connection,
+    document_id: &str,
+    source_revision_id: &str,
+) -> Result<Option<String>, DatabaseError> {
+    let status = connection
+        .query_row(
+            "SELECT status FROM ai_requests WHERE document_id = ?1 AND source_revision_id = ?2 AND target_language = '' AND task LIKE 'profile_%' ORDER BY CASE status WHEN 'running' THEN 1 WHEN 'queued' THEN 2 WHEN 'failed' THEN 3 ELSE 4 END, created_at DESC LIMIT 1",
+            params![document_id, source_revision_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(status.filter(|status| status != "succeeded"))
 }
 
 fn public_document_summary(
@@ -1549,7 +1709,7 @@ fn backfill_published_metadata_requests(connection: &mut Connection) -> Result<(
 }
 
 fn backfill_profile_summaries(connection: &mut Connection) -> Result<(), DatabaseError> {
-    const PROFILE_SUMMARY_VERSION: &str = "4";
+    const PROFILE_SUMMARY_VERSION: &str = "5";
     let version: Option<String> = connection
         .query_row(
             "SELECT value FROM app_meta WHERE key = 'profile_summary_version'",
@@ -1580,10 +1740,62 @@ fn backfill_profile_summaries(connection: &mut Connection) -> Result<(), Databas
             "",
             now(),
         )?;
+        for task in PROFILE_SUMMARY_TASKS {
+            force_enqueue_ai_request(
+                &transaction,
+                &document_id,
+                &source_revision_id,
+                task,
+                "",
+                now(),
+            )?;
+        }
     }
     transaction.execute(
         "INSERT INTO app_meta(key, value) VALUES ('profile_summary_version', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         [PROFILE_SUMMARY_VERSION],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_ai_request_task_constraint(connection: &mut Connection) -> Result<(), DatabaseError> {
+    let schema: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ai_requests'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if schema
+        .as_deref()
+        .is_some_and(|sql| sql.contains("profile_experience"))
+    {
+        return Ok(());
+    }
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "DROP INDEX IF EXISTS ai_requests_status_idx;
+         DROP INDEX IF EXISTS ai_requests_document_idx;
+         ALTER TABLE ai_requests RENAME TO ai_requests_legacy;
+         CREATE TABLE ai_requests (
+             id TEXT PRIMARY KEY NOT NULL,
+             document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+             source_revision_id TEXT NOT NULL REFERENCES document_revisions(id),
+             task TEXT NOT NULL CHECK(task IN ('metadata', 'translate', 'profile_experience', 'profile_personality', 'profile_mbti', 'profile_schwartz', 'profile_motivations', 'profile_philosophy', 'profile_timeline')),
+             target_language TEXT NOT NULL DEFAULT '',
+             status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
+             result_summary TEXT,
+             error TEXT,
+             created_at INTEGER NOT NULL,
+             started_at INTEGER,
+             completed_at INTEGER,
+             UNIQUE(document_id, source_revision_id, task, target_language)
+         );
+         INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, result_summary, error, created_at, started_at, completed_at)
+         SELECT id, document_id, source_revision_id, task, target_language, status, result_summary, error, created_at, started_at, completed_at
+         FROM ai_requests_legacy;
+         DROP TABLE ai_requests_legacy;",
     )?;
     transaction.commit()?;
     Ok(())
@@ -1950,7 +2162,10 @@ mod tests {
     use rusqlite::{Connection, params};
     use serde_json::json;
 
-    use super::{Database, DocumentSave, NewDocument, NewDocumentComment, PublishedMetadata};
+    use super::{
+        Database, DocumentSave, NewDocument, NewDocumentComment, PROFILE_SUMMARY_TASKS,
+        PublishedMetadata,
+    };
 
     fn metadata(language: &str, description: &str) -> PublishedMetadata {
         PublishedMetadata {
@@ -2316,6 +2531,110 @@ mod tests {
             Some(
                 "## Writing patterns\n\n- Builds software documentation from explicit project evidence."
             )
+        );
+    }
+
+    #[test]
+    fn profile_publication_queues_independent_summary_tasks() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let profile = database.profile_document("author-a").unwrap();
+        let source = database
+            .save_document(&DocumentSave {
+                id: &profile.document.id,
+                author_id: "author-a",
+                title: "Profile",
+                source_language: "en-US",
+                content: "# Profile",
+                message: "Write profile",
+                metadata: &json!({}),
+            })
+            .unwrap()
+            .unwrap();
+        database
+            .publish_document(&profile.document.id, &source.revision.id)
+            .unwrap()
+            .unwrap();
+        let requests = database.ai_requests().unwrap();
+        assert_eq!(requests.len(), PROFILE_SUMMARY_TASKS.len() + 1);
+        assert!(PROFILE_SUMMARY_TASKS.iter().all(|task| {
+            requests
+                .iter()
+                .any(|request| request.task == *task && request.target_language.is_empty())
+        }));
+
+        database.schedule_profile_summary_tasks_if_due().unwrap();
+        let scheduled = database.ai_requests().unwrap();
+        assert_eq!(scheduled.len(), PROFILE_SUMMARY_TASKS.len() + 1);
+        database.schedule_profile_summary_tasks_if_due().unwrap();
+        assert_eq!(database.ai_requests().unwrap().len(), scheduled.len());
+
+        let queued = database
+            .enqueue_profile_summary_tasks(
+                &profile.document.id,
+                &source.revision.id,
+                Some("profile_mbti"),
+            )
+            .unwrap();
+        assert_eq!(queued, vec!["profile_mbti"]);
+    }
+
+    #[test]
+    fn migrates_existing_ai_request_tables_for_profile_summary_tasks() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        drop(database);
+        let database_path = directory.path().join("ctx.sqlite3");
+        let connection = Connection::open(database_path).unwrap();
+        connection
+            .execute_batch(
+                "DROP INDEX ai_requests_status_idx;
+                 DROP INDEX ai_requests_document_idx;
+                 ALTER TABLE ai_requests RENAME TO ai_requests_new;
+                 CREATE TABLE ai_requests (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                     source_revision_id TEXT NOT NULL REFERENCES document_revisions(id),
+                     task TEXT NOT NULL CHECK(task IN ('metadata', 'translate')),
+                     target_language TEXT NOT NULL DEFAULT '',
+                     status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
+                     result_summary TEXT,
+                     error TEXT,
+                     created_at INTEGER NOT NULL,
+                     started_at INTEGER,
+                     completed_at INTEGER,
+                     UNIQUE(document_id, source_revision_id, task, target_language)
+                 );
+                 INSERT INTO ai_requests SELECT * FROM ai_requests_new;
+                 DROP TABLE ai_requests_new;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let reopened = Database::open(directory.path()).unwrap();
+        let profile = reopened.profile_document("author-a").unwrap();
+        let source = reopened
+            .save_document(&DocumentSave {
+                id: &profile.document.id,
+                author_id: "author-a",
+                title: "Profile",
+                source_language: "en-US",
+                content: "# Profile",
+                message: "Write profile",
+                metadata: &json!({}),
+            })
+            .unwrap()
+            .unwrap();
+        reopened
+            .publish_document(&profile.document.id, &source.revision.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            reopened
+                .ai_requests()
+                .unwrap()
+                .iter()
+                .any(|request| request.task == "profile_mbti")
         );
     }
 

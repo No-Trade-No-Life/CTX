@@ -81,6 +81,7 @@ import type {
   PublicDocument,
   PublicDocumentDetail,
   PublicUserProfile,
+  ProfileSummaryTaskResponse,
   PublicationTime,
   SchwartzValue,
   SummaryEvidence,
@@ -550,7 +551,6 @@ function DocumentListPage({ token }: { token: string }) {
     },
     onError: showError,
   })
-
   if (documents.isPending) return <PageSkeleton />
   if (documents.error) return <PageError error={documents.error} />
   const items = documents.data ?? []
@@ -2791,6 +2791,7 @@ function schwartzValueLabel(
 function PublicUserPage() {
   const { ownerId = "" } = useParams()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const { locale, t } = useI18n()
   const requestedTab = searchParams.get("tab")
@@ -2840,6 +2841,24 @@ function PublicUserPage() {
     onSuccess: (detail) => navigate(`/documents/${detail.document.id}`),
     onError: showError,
   })
+  const profileSummaries = useMutation({
+    mutationFn: () =>
+      request<ProfileSummaryTaskResponse>(
+        `/api/v1/documents/${profile.data?.profile?.id ?? ""}/profile-summaries`,
+        session?.accessToken ?? undefined,
+        {
+          method: "POST",
+          body: JSON.stringify({ task: "all" }),
+        }
+      ),
+    onSuccess: () => {
+      toast.success(t("profileSummariesQueued"))
+      void queryClient.invalidateQueries({
+        queryKey: ["public-user-profile", ownerId, locale],
+      })
+    },
+    onError: showError,
+  })
   useEffect(() => {
     if (searchParams.get("tab") === activeTab) return
     const nextSearchParams = new URLSearchParams(searchParams)
@@ -2879,21 +2898,40 @@ function PublicUserPage() {
           </div>
         </div>
         {isOwner ? (
-          <Button
-            variant="outline"
-            disabled={profileDocument.isPending}
-            onClick={() => profileDocument.mutate()}
-          >
-            {profileDocument.isPending ? (
-              <LoaderCircleIcon
-                className="animate-spin"
-                data-icon="inline-start"
-              />
-            ) : (
-              <PencilIcon data-icon="inline-start" />
-            )}
-            {t("editPersonalPage")}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              disabled={profileDocument.isPending}
+              onClick={() => profileDocument.mutate()}
+            >
+              {profileDocument.isPending ? (
+                <LoaderCircleIcon
+                  className="animate-spin"
+                  data-icon="inline-start"
+                />
+              ) : (
+                <PencilIcon data-icon="inline-start" />
+              )}
+              {t("editPersonalPage")}
+            </Button>
+            {document ? (
+              <Button
+                variant="ghost"
+                disabled={profileSummaries.isPending}
+                onClick={() => profileSummaries.mutate()}
+              >
+                {profileSummaries.isPending ? (
+                  <LoaderCircleIcon
+                    className="animate-spin"
+                    data-icon="inline-start"
+                  />
+                ) : (
+                  <RefreshCwIcon data-icon="inline-start" />
+                )}
+                {t("refreshProfileSummaries")}
+              </Button>
+            ) : null}
+          </div>
         ) : null}
       </header>
       <section className="py-10" aria-labelledby="profile-activity-title">
@@ -3853,9 +3891,29 @@ function showError(error: Error) {
 
 function aiTaskLabel(
   request: AiRequest,
-  t: (key: "aiTaskMetadata" | "aiTaskTranslate") => string
+  t: (key:
+    | "aiTaskMetadata"
+    | "aiTaskTranslate"
+    | "aiTaskProfileExperience"
+    | "aiTaskProfilePersonality"
+    | "aiTaskProfileMbti"
+    | "aiTaskProfileSchwartz"
+    | "aiTaskProfileMotivations"
+    | "aiTaskProfilePhilosophy"
+    | "aiTaskProfileTimeline") => string
 ) {
-  return t(request.task === "metadata" ? "aiTaskMetadata" : "aiTaskTranslate")
+  const labels = {
+    metadata: "aiTaskMetadata",
+    translate: "aiTaskTranslate",
+    profile_experience: "aiTaskProfileExperience",
+    profile_personality: "aiTaskProfilePersonality",
+    profile_mbti: "aiTaskProfileMbti",
+    profile_schwartz: "aiTaskProfileSchwartz",
+    profile_motivations: "aiTaskProfileMotivations",
+    profile_philosophy: "aiTaskProfilePhilosophy",
+    profile_timeline: "aiTaskProfileTimeline",
+  } as const
+  return t(labels[request.task])
 }
 
 function aiStatusLabel(
