@@ -220,7 +220,13 @@ const englishCopy = defineCopy({
   experienceSummaryEmpty:
     "The author's published articles do not state experience facts yet.",
   profileTabResume: "Experience resume",
+  profileTabPersonality: "Personality analysis",
   profileTabArticle: "Profile article",
+  personalityAnalysis: "Personality & psychological reading",
+  personalityAnalysisDescription:
+    "An AI-generated, source-grounded reading of the author's published writing. It is not a clinical or diagnostic assessment.",
+  personalityAnalysisEmpty:
+    "The author's published articles do not yet contain enough explicit material for an evidence-supported reading.",
   profileArticle: "Profile article",
   profileArticleUnavailableTitle: "No published profile article",
   profileArticleUnavailableDescription:
@@ -440,7 +446,13 @@ const chineseCopy: Copy = {
     "根据该作者全部已发布文章自动生成的客观中立简历。",
   experienceSummaryEmpty: "该作者已发布的文章暂未包含可整理为简历的经历事实。",
   profileTabResume: "经历简历",
+  profileTabPersonality: "人格心理分析",
   profileTabArticle: "主页文章",
+  personalityAnalysis: "人格与心理文本分析",
+  personalityAnalysisDescription:
+    "基于作者已发布文章的 AI 文本分析，只呈现可追溯的写作观察；这不是医疗、精神健康或临床诊断。",
+  personalityAnalysisEmpty:
+    "该作者已发布的文章暂未包含足以形成有证据支撑分析的明确内容。",
   profileArticle: "主页文章",
   profileArticleUnavailableTitle: "尚未发布主页文章",
   profileArticleUnavailableDescription: "这位作者尚未发布个人主页。",
@@ -664,7 +676,13 @@ const japaneseCopy: Copy = {
   experienceSummaryEmpty:
     "この執筆者が公開した記事には、レジュメに整理できる経歴の事実がまだありません。",
   profileTabResume: "経歴レジュメ",
+  profileTabPersonality: "パーソナリティ分析",
   profileTabArticle: "プロフィール記事",
+  personalityAnalysis: "パーソナリティと心理の文章分析",
+  personalityAnalysisDescription:
+    "公開された文章に基づく AI の分析であり、根拠をたどれる記述だけを扱います。臨床的または診断的な評価ではありません。",
+  personalityAnalysisEmpty:
+    "この執筆者が公開した記事には、根拠のある分析に十分な明示的な内容がまだありません。",
   profileArticle: "プロフィール記事",
   profileArticleUnavailableTitle: "公開されたプロフィール記事はありません",
   profileArticleUnavailableDescription:
@@ -896,7 +914,13 @@ const spanishCopy: Copy = {
   experienceSummaryEmpty:
     "Los artículos publicados por esta persona aún no contienen hechos de experiencia.",
   profileTabResume: "Currículum",
+  profileTabPersonality: "Análisis de personalidad",
   profileTabArticle: "Artículo de perfil",
+  personalityAnalysis: "Lectura de personalidad y psicología",
+  personalityAnalysisDescription:
+    "Una lectura de IA basada en evidencia de los textos publicados por esta persona. No es una evaluación clínica ni diagnóstica.",
+  personalityAnalysisEmpty:
+    "Los artículos publicados por esta persona aún no contienen suficiente material explícito para una lectura respaldada por evidencia.",
   profileArticle: "Artículo de perfil",
   profileArticleUnavailableTitle: "No hay artículo de perfil publicado",
   profileArticleUnavailableDescription:
