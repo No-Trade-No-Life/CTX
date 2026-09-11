@@ -437,6 +437,11 @@ fn normalize_daily_timeline(value: Value, published_articles: &[PublishedArticle
             {
                 entry.insert("summary".to_owned(), description);
             }
+            if !entry.contains_key("summary")
+                && let Some(sentence) = entry.remove("sentence")
+            {
+                entry.insert("summary".to_owned(), sentence);
+            }
             if let Some(evidence) = entry.get("evidence").cloned()
                 && !evidence.is_array()
             {
