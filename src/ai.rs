@@ -174,7 +174,23 @@ async fn extract_profile_summary(
     let instructions = profile_summary_instructions(task).ok_or(AiError::Response)?;
     let input = metadata_input(document, published_articles);
     let output = request_output(credentials, &instructions, &input).await?;
-    profile_summary_from_output(&output, task)
+    profile_summary_from_output(&output, task).map_err(|error| match error {
+        AiError::Response => AiError::Rejected(format!(
+            "profile summary {task} response was not accepted ({} bytes): {}",
+            output.len(),
+            response_preview(&output)
+        )),
+        error => error,
+    })
+}
+
+fn response_preview(output: &str) -> String {
+    let compact = output.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview = compact.chars().take(240).collect::<String>();
+    if compact.chars().count() > 240 {
+        preview.push('…');
+    }
+    preview
 }
 
 fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummaryPatch, AiError> {
