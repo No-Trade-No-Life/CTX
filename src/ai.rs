@@ -199,12 +199,12 @@ fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummar
             })
         }
         "profile_mbti" => {
-            let analysis: MbtiAnalysis = serde_json::from_value(
+            let analysis = parse_mbti_analysis(
                 summary_value(&value, "mbti_analysis")
-                    .ok_or(AiError::Response)?
-                    .clone(),
-            )
-            .map_err(|_| AiError::Response)?;
+                    .or_else(|| summary_value(&value, "mbti"))
+                    .or_else(|| (value.is_object()).then_some(&value))
+                    .ok_or(AiError::Response)?,
+            )?;
             if !valid_mbti_type(&analysis) || analysis.dimensions.len() != 4 {
                 return Err(AiError::Response);
             }
@@ -232,24 +232,25 @@ fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummar
                 "benevolence",
                 "universalism",
             ];
-            let values: Vec<SchwartzValue> = serde_json::from_value(
+            let values = parse_schwartz_values(
                 summary_value(&value, "schwartz_values")
-                    .ok_or(AiError::Response)?
-                    .clone(),
-            )
-            .map_err(|_| AiError::Response)?;
+                    .or_else(|| summary_value(&value, "values"))
+                    .or_else(|| (value.is_array()).then_some(&value))
+                    .ok_or(AiError::Response)?,
+            )?;
             if !valid_schwartz_values(&values, &VALUES) {
                 return Err(AiError::Response);
             }
             Ok(ProfileSummaryPatch::Schwartz(values))
         }
         "profile_timeline" => {
-            let entries: Vec<DailyTimelineEntry> = serde_json::from_value(
+            let entries = parse_daily_timeline(
                 summary_value(&value, "daily_timeline")
-                    .ok_or(AiError::Response)?
-                    .clone(),
-            )
-            .map_err(|_| AiError::Response)?;
+                    .or_else(|| summary_value(&value, "timeline"))
+                    .or_else(|| summary_value(&value, "entries"))
+                    .or_else(|| (value.is_array()).then_some(&value))
+                    .ok_or(AiError::Response)?,
+            )?;
             if !valid_daily_timeline(&entries) {
                 return Err(AiError::Response);
             }
@@ -277,7 +278,8 @@ fn summary_value<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
                 .get("metadata")
                 .and_then(|metadata| metadata.get(field))
         })
-        .or_else(|| (value.is_array() || value.is_object()).then_some(value))
+        .or_else(|| value.get("result").and_then(|result| result.get(field)))
+        .or_else(|| value.get("data").and_then(|data| data.get(field)))
 }
 
 fn summary_string(value: &Value, field: &str) -> Option<String> {
@@ -291,6 +293,104 @@ fn summary_string(value: &Value, field: &str) -> Option<String> {
                 .map(str::to_owned)
         })
         .or_else(|| value.as_str().map(str::to_owned))
+}
+
+fn parse_mbti_analysis(value: &Value) -> Result<MbtiAnalysis, AiError> {
+    if let Ok(analysis) = serde_json::from_value::<MbtiAnalysis>(value.clone()) {
+        return Ok(analysis);
+    }
+    let Some(object) = value.as_object() else {
+        return Err(AiError::Response);
+    };
+    let mut normalized = object.clone();
+    if !normalized.contains_key("type_code") {
+        for alias in ["type", "classification", "result"] {
+            if let Some(type_code) = object.get(alias).and_then(Value::as_str) {
+                normalized.insert("type_code".to_owned(), Value::String(type_code.to_owned()));
+                break;
+            }
+        }
+    }
+    if !normalized.contains_key("dimensions")
+        && let Some(dimensions) = object.get("dimension_analysis")
+    {
+        normalized.insert("dimensions".to_owned(), dimensions.clone());
+    }
+    let Some(dimensions) = normalized.get("dimensions") else {
+        return Err(AiError::Response);
+    };
+    if let Some(dimensions) = dimensions.as_object() {
+        let normalized_dimensions = dimensions
+            .iter()
+            .map(|(axis, dimension)| {
+                let mut dimension = dimension.as_object().cloned().unwrap_or_default();
+                dimension
+                    .entry("axis".to_owned())
+                    .or_insert_with(|| Value::String(axis.clone()));
+                Value::Object(dimension)
+            })
+            .collect::<Vec<_>>();
+        normalized.insert("dimensions".to_owned(), Value::Array(normalized_dimensions));
+    }
+    serde_json::from_value(Value::Object(normalized)).map_err(|_| AiError::Response)
+}
+
+fn parse_schwartz_values(value: &Value) -> Result<Vec<SchwartzValue>, AiError> {
+    if let Ok(values) = serde_json::from_value::<Vec<SchwartzValue>>(value.clone()) {
+        return Ok(values);
+    }
+    let Some(values) = value.as_array() else {
+        return Err(AiError::Response);
+    };
+    let normalized = values
+        .iter()
+        .map(|value| {
+            let mut object = value.as_object().cloned().unwrap_or_default();
+            if !object.contains_key("key") {
+                for alias in ["name", "value", "dimension"] {
+                    if let Some(name) = value.get(alias) {
+                        object.insert("key".to_owned(), name.clone());
+                        break;
+                    }
+                }
+            }
+            for field in ["score", "rank"] {
+                if let Some(number) = object.get(field).and_then(Value::as_str)
+                    && let Ok(number) = number.parse::<u8>()
+                {
+                    object.insert(field.to_owned(), Value::from(number));
+                }
+            }
+            Value::Object(object)
+        })
+        .collect::<Vec<_>>();
+    serde_json::from_value(Value::Array(normalized)).map_err(|_| AiError::Response)
+}
+
+fn parse_daily_timeline(value: &Value) -> Result<Vec<DailyTimelineEntry>, AiError> {
+    if let Ok(entries) = serde_json::from_value::<Vec<DailyTimelineEntry>>(value.clone()) {
+        return Ok(entries);
+    }
+    let Some(object) = value.as_object() else {
+        return Err(AiError::Response);
+    };
+    let entries = object
+        .iter()
+        .map(|(date, summary)| {
+            let text = summary
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| {
+                    summary
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default();
+            json!({"date": date, "summary": text, "evidence": []})
+        })
+        .collect::<Vec<_>>();
+    serde_json::from_value(Value::Array(entries)).map_err(|_| AiError::Response)
 }
 
 fn apply_profile_summary_patch(
