@@ -1,11 +1,16 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
 use crate::{
-    db::{AiCredentials, AiRequest, Database, DocumentDetail, PublishedArticle, PublishedMetadata},
+    db::{
+        AiCredentials, AiRequest, DailyTimelineEntry, Database, DocumentDetail, MbtiAnalysis,
+        PublishedArticle, PublishedMetadata, SchwartzValue, SummaryEvidence,
+    },
     language::normalize_language_tag,
 };
 
@@ -91,6 +96,16 @@ struct MetadataOutput {
     experience_summary: String,
     #[serde(default)]
     personality_analysis: String,
+    #[serde(default)]
+    mbti_analysis: MbtiAnalysis,
+    #[serde(default)]
+    schwartz_values: Vec<SchwartzValue>,
+    #[serde(default)]
+    unconscious_motivations: String,
+    #[serde(default)]
+    philosophical_references: String,
+    #[serde(default)]
+    daily_timeline: Vec<DailyTimelineEntry>,
 }
 
 pub async fn run(
@@ -126,7 +141,7 @@ pub async fn translate_document(
         serde_json::to_string(source_metadata).map_err(|_| AiError::Response)?
     );
     let output = request_output(credentials, &instructions, &content).await?;
-    translation_from_output(&output)
+    translation_from_output(&output, &document.document.kind)
 }
 
 pub async fn extract_document_metadata(
@@ -137,7 +152,7 @@ pub async fn extract_document_metadata(
     let instructions = metadata_instructions(&document.document.kind);
     let content = metadata_input(document, published_articles);
     let output = request_output(credentials, &instructions, &content).await?;
-    metadata_from_output(&output)
+    metadata_from_output(&output, &document.document.kind)
 }
 
 pub async fn run_worker(database: Database) {
@@ -221,7 +236,7 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
                     .map_err(|error| error.to_string())?;
             }
             let profile_summary_refresh = if document.document.kind == "profile" {
-                "; refreshed the experience resume and personality analysis from all published articles"
+                "; refreshed all profile summaries from published articles"
             } else {
                 ""
             };
@@ -278,12 +293,16 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
     }
 }
 
-fn translation_from_output(output: &str) -> Result<DocumentTranslation, AiError> {
+fn translation_from_output(
+    output: &str,
+    document_kind: &str,
+) -> Result<DocumentTranslation, AiError> {
     let translation: TranslationOutput =
         serde_json::from_str(output).map_err(|_| AiError::Response)?;
     if translation.title.trim().is_empty()
         || translation.content.trim().is_empty()
         || translation.metadata.is_empty()
+        || (document_kind == "profile" && !profile_summaries_are_complete(&translation.metadata))
     {
         return Err(AiError::Response);
     }
@@ -294,7 +313,7 @@ fn translation_from_output(output: &str) -> Result<DocumentTranslation, AiError>
     })
 }
 
-fn metadata_from_output(output: &str) -> Result<DocumentMetadata, AiError> {
+fn metadata_from_output(output: &str, document_kind: &str) -> Result<DocumentMetadata, AiError> {
     let output: MetadataOutput = serde_json::from_str(output).map_err(|_| AiError::Response)?;
     let inferred_language = output.inferred_lang;
     let inferred_language = normalize_language_tag(&inferred_language)
@@ -311,8 +330,15 @@ fn metadata_from_output(output: &str) -> Result<DocumentMetadata, AiError> {
         audience: output.audience,
         experience_summary: output.experience_summary,
         personality_analysis: output.personality_analysis,
+        mbti_analysis: output.mbti_analysis,
+        schwartz_values: output.schwartz_values,
+        unconscious_motivations: output.unconscious_motivations,
+        philosophical_references: output.philosophical_references,
+        daily_timeline: output.daily_timeline,
     };
-    if metadata.is_empty() {
+    if metadata.is_empty()
+        || (document_kind == "profile" && !profile_summaries_are_complete(&metadata))
+    {
         return Err(AiError::Response);
     }
     Ok(DocumentMetadata {
@@ -321,12 +347,99 @@ fn metadata_from_output(output: &str) -> Result<DocumentMetadata, AiError> {
     })
 }
 
+fn profile_summaries_are_complete(metadata: &PublishedMetadata) -> bool {
+    const MBTI_AXES: [&str; 4] = ["I/E", "N/S", "T/F", "J/P"];
+    const SCHWARTZ_VALUES: [&str; 10] = [
+        "self_direction",
+        "stimulation",
+        "hedonism",
+        "achievement",
+        "power",
+        "security",
+        "conformity",
+        "tradition",
+        "benevolence",
+        "universalism",
+    ];
+
+    valid_mbti_type(&metadata.mbti_analysis)
+        && metadata.mbti_analysis.dimensions.len() == MBTI_AXES.len()
+        && metadata
+            .mbti_analysis
+            .dimensions
+            .iter()
+            .zip(MBTI_AXES)
+            .all(|(dimension, axis)| valid_mbti_dimension(dimension, axis))
+        && metadata.schwartz_values.len() == SCHWARTZ_VALUES.len()
+        && valid_schwartz_values(&metadata.schwartz_values, &SCHWARTZ_VALUES)
+        && valid_daily_timeline(&metadata.daily_timeline)
+}
+
+fn valid_mbti_type(analysis: &MbtiAnalysis) -> bool {
+    let type_code = analysis.type_code.as_bytes();
+    valid_confidence(&analysis.confidence)
+        && (analysis.type_code == "undetermined"
+            || (type_code.len() == 4
+                && matches!(type_code[0], b'I' | b'E')
+                && matches!(type_code[1], b'N' | b'S')
+                && matches!(type_code[2], b'T' | b'F')
+                && matches!(type_code[3], b'J' | b'P')))
+}
+
+fn valid_mbti_dimension(dimension: &crate::db::MbtiDimension, axis: &str) -> bool {
+    let preference_is_valid = dimension.preference == "undetermined"
+        || axis
+            .split('/')
+            .any(|preference| preference == dimension.preference);
+    dimension.axis == axis
+        && preference_is_valid
+        && valid_confidence(&dimension.confidence)
+        && dimension.evidence.iter().all(valid_evidence)
+}
+
+fn valid_schwartz_values(values: &[SchwartzValue], expected_values: &[&str]) -> bool {
+    let mut keys = BTreeSet::new();
+    let mut ranks = BTreeSet::new();
+    values.iter().all(|value| {
+        keys.insert(value.key.as_str())
+            && ranks.insert(value.rank)
+            && value.rank > 0
+            && value.rank <= expected_values.len() as u8
+            && value.score <= 100
+            && value.evidence.iter().all(valid_evidence)
+    }) && keys.len() == expected_values.len()
+        && expected_values.iter().all(|key| keys.contains(key))
+        && ranks.len() == expected_values.len()
+}
+
+fn valid_daily_timeline(entries: &[DailyTimelineEntry]) -> bool {
+    let mut previous_date = None;
+    entries.iter().all(|entry| {
+        let parsed_date = NaiveDate::parse_from_str(&entry.date, "%Y-%m-%d").ok();
+        let is_ordered = parsed_date
+            .as_ref()
+            .is_some_and(|date| previous_date.is_none_or(|previous| *date > previous));
+        previous_date = parsed_date;
+        is_ordered && !entry.summary.trim().is_empty() && entry.evidence.iter().all(valid_evidence)
+    })
+}
+
+fn valid_evidence(evidence: &SummaryEvidence) -> bool {
+    evidence.article_url.starts_with("#/p/")
+        && !evidence.article_title.trim().is_empty()
+        && !evidence.explanation.trim().is_empty()
+}
+
+fn valid_confidence(confidence: &str) -> bool {
+    matches!(confidence, "high" | "medium" | "low" | "undetermined")
+}
+
 fn metadata_instructions(document_kind: &str) -> String {
     let profile_instructions = (document_kind == "profile").then_some(
-        "This is a personal profile document. The input includes the complete set of ordinary articles published by this author. Build experience_summary from all of those sources and the profile document, not from the profile document alone. experience_summary must be concise GitHub Flavored Markdown in a resume format. Use only sections supported by explicit facts, such as `### Overview`, `### Experience`, `### Projects`, and `### Milestones`. Use factual bullet points and dates only when stated. Do not use first person, emotional language, subjective evaluation, or speculation. Do not invent employers, roles, education, skills, chronology, or links. If no experience facts are stated anywhere, return an empty string. Also build personality_analysis from the same complete source set. personality_analysis must be concise GitHub Flavored Markdown for a public personal page. Start with a blockquote stating that it is an AI reading of published writing, not a clinical or diagnostic assessment. Then use only evidence-supported sections such as `### Writing patterns`, `### Values and priorities`, `### Decision and work style`, and `### Expression and collaboration`. For every substantive point, cite one or more of the supplied source article links. Describe observable patterns in the writing, not private facts about the author. Do not diagnose or assess mental health; do not infer conditions, trauma, unconscious motives, psychological defence mechanisms, cognitive functions, or risks. Do not assign a definitive personality type. Do not make claims about relationships or emotions unless the text explicitly states them. If the articles do not contain enough explicit material for a useful, evidence-supported analysis, return an empty string.",
+        "This is a personal profile document. The input includes the complete set of ordinary articles published by this author. Build experience_summary from all of those sources and the profile document, not from the profile document alone. experience_summary must be concise GitHub Flavored Markdown in a resume format. Use only sections supported by explicit facts, such as `### Overview`, `### Experience`, `### Projects`, and `### Milestones`. Use factual bullet points and dates only when stated. Do not use first person, emotional language, subjective evaluation, or speculation. Do not invent employers, roles, education, skills, chronology, or links. If no experience facts are stated anywhere, return an empty string. Also build personality_analysis from the same complete source set. personality_analysis must be concise GitHub Flavored Markdown for a public personal page. Start with a blockquote stating that it is an AI reading of published writing, not a clinical or diagnostic assessment. Then use only evidence-supported sections such as `### Writing patterns`, `### Values and priorities`, `### Decision and work style`, and `### Expression and collaboration`. For every substantive point, cite one or more of the supplied source article links. Describe observable patterns in the writing, not private facts about the author. Do not diagnose or assess mental health; do not infer conditions, trauma, psychological defence mechanisms, cognitive functions, or risks. Do not make claims about relationships or emotions unless the text explicitly states them. If the articles do not contain enough explicit material for a useful, evidence-supported analysis, return an empty string. Also return a complete structured MBTI analysis in mbti_analysis. It must contain type_code (one of the sixteen four-letter MBTI codes or `undetermined`), confidence (`high`, `medium`, `low`, or `undetermined`), and exactly four dimensions in this order: I/E, N/S, T/F, J/P. Each dimension must include its axis, one preference from that axis or `undetermined`, confidence, and zero or more evidence objects. Also return exactly ten schwartz_values, with the keys self_direction, stimulation, hedonism, achievement, power, security, conformity, tradition, benevolence, and universalism. Each value must include an integer score from 0 to 100, a unique integer rank from 1 (strongest) to 10, and zero or more evidence objects. Every evidence object must have article_title, article_url, and explanation; article_url must exactly use one of the supplied `#/p/...` links. MBTI is a tentative textual classification, never a medical or scientific diagnosis. Build unconscious_motivations as concise GitHub Flavored Markdown that offers explicitly tentative interpretations of possible motivations in the writing, with source links for each conclusion. Do not infer trauma, mental-health conditions, or private facts. Build philosophical_references as concise GitHub Flavored Markdown that identifies the author's expressed propositions, relevant philosophical references or traditions, and evidence links; do not attribute an author to a philosopher or school without textual support. Build daily_timeline as an ascending list of zero or more entries. Each entry must have an explicit YYYY-MM-DD date, one concise sentence saying what the author did and what result was recorded that day, and zero or more evidence objects. Use only dates stated in the Markdown, the supplied document date, or the supplied public publication date; merge multiple article events from the same day and never invent dates, events, or results.",
     );
     format!(
-        "You are CTX's editorial metadata assistant. Extract structured metadata from Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences for an article list or RSS description), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), audience (a short description), experience_summary (an empty string unless this is a personal profile document), and personality_analysis (an empty string unless this is a personal profile document). Preserve the author's title; do not generate or change it. Summary is part of this metadata extraction; do not create a separate summary artifact. {}",
+        "You are CTX's editorial metadata assistant. Extract structured metadata from Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences for an article list or RSS description), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), audience (a short description), experience_summary (an empty string unless this is a personal profile document), personality_analysis (an empty string unless this is a personal profile document), mbti_analysis (an empty object unless this is a personal profile document), schwartz_values (an empty array unless this is a personal profile document), unconscious_motivations (an empty string unless this is a personal profile document), philosophical_references (an empty string unless this is a personal profile document), and daily_timeline (an empty array unless this is a personal profile document). Preserve the author's title; do not generate or change it. Summary is part of this metadata extraction; do not create a separate summary artifact. {}",
         profile_instructions.unwrap_or_default()
     )
 }
@@ -346,10 +459,12 @@ fn metadata_input(document: &DocumentDetail, published_articles: &[PublishedArti
             .enumerate()
             .map(|(index, article)| {
                 format!(
-                    "## Published article {}\nSource title: {}\nSource link: #/p/{}\n\nMarkdown:\n{}",
+                    "## Published article {}\nSource title: {}\nSource link: #/p/{}\nDocument date: {}\nPublic publication date: {}\n\nMarkdown:\n{}",
                     index + 1,
                     article.title,
                     article.id,
+                    article.inferred_date,
+                    article.published_date,
                     article.content
                 )
             })
@@ -364,7 +479,7 @@ fn metadata_input(document: &DocumentDetail, published_articles: &[PublishedArti
 
 fn translation_instructions(source_language: &str, target_language: &str) -> String {
     format!(
-        "You are CTX's Markdown translation assistant. Translate the title, complete GitHub Flavored Markdown document, and editorial metadata from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, task lists, tables, HTML, and frontmatter. For Mermaid fenced code blocks, preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators; translate only reader-facing labels, titles, and subgraph labels. Do not leave Mermaid labels in the source language. Do not change non-text elements or code. Translate description, summary, short_summary, tags, key_points, audience, experience_summary, and personality_analysis in metadata; preserve inferred_date and set metadata.inferred_lang to {target_language}. When experience_summary is a Markdown resume or personality_analysis is a source-grounded reading, preserve its headings, list structure, evidence links, factual wording, and non-clinical disclaimer. Use fluent, idiomatic language for a reader familiar with the subject. {} Return only a JSON object with string fields title and content and an object field metadata.",
+        "You are CTX's Markdown translation assistant. Translate the title, complete GitHub Flavored Markdown document, and editorial metadata from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, task lists, tables, HTML, and frontmatter. For Mermaid fenced code blocks, preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators; translate only reader-facing labels, titles, and subgraph labels. Do not leave Mermaid labels in the source language. Do not change non-text elements or code. Translate description, summary, short_summary, tags, key_points, audience, experience_summary, personality_analysis, unconscious_motivations, philosophical_references, the explanations and article titles inside mbti_analysis and schwartz_values, and the summaries and evidence inside daily_timeline. Preserve all type codes, MBTI axes, value keys, scores, ranks, ISO dates, and `#/p/...` evidence links exactly. Preserve inferred_date and set metadata.inferred_lang to {target_language}. Keep the non-clinical and tentative limitations in each profile summary. Use fluent, idiomatic language for a reader familiar with the subject. {} Return only a JSON object with string fields title and content and an object field metadata.",
         japanese_translation_rules(target_language)
     )
 }
@@ -423,7 +538,7 @@ fn output_text_from_sse(sse: &str) -> Option<String> {
 
 fn system_prompt(task: &AiTask) -> String {
     match task {
-        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, audience, experience_summary, and personality_analysis. Preserve the author's factual claims and do not invent sources. For a profile document, experience_summary must be a compact neutral summary of explicitly stated experience facts only, with no first person, subjective evaluation, emotion, or speculation. personality_analysis must be a source-grounded, non-clinical reading of published writing, not a diagnosis or mental-health assessment. Return empty experience_summary and personality_analysis for other documents.".to_owned(),
+        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, audience, experience_summary, personality_analysis, mbti_analysis, schwartz_values, unconscious_motivations, philosophical_references, and daily_timeline. Preserve the author's factual claims and do not invent sources. For a profile document, its structured summaries must remain source-grounded and non-clinical; keep evidence links, ranks, scores, and dates factual. Return empty profile summary fields for other documents.".to_owned(),
         AiTask::DetectLanguage => "You are CTX's language detector. Read the document title and Markdown, then return only its original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES. Do not add explanation, punctuation, or Markdown. If the language cannot be determined, return und.".to_owned(),
         AiTask::Polish => "You are CTX's Markdown editing assistant. Polish the complete document for clarity, flow, precision, and concise professional tone while preserving the author's facts, intent, and voice. Return only the revised GitHub Flavored Markdown. Preserve every Markdown structure and meaning: headings, links and URLs, inline code, code blocks, Mermaid syntax, images, task lists, tables, HTML, frontmatter, and formulas. Do not add sources, claims, or editorial commentary.".to_owned(),
     }
@@ -431,12 +546,73 @@ fn system_prompt(task: &AiTask) -> String {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{
         AiTask, metadata_from_output, metadata_instructions, output_text_from_sse, request_body,
         system_prompt, translation_from_output, translation_instructions,
     };
+
+    fn complete_profile_metadata() -> Value {
+        let evidence = json!({
+            "article_title": "A source article",
+            "article_url": "#/p/article-1",
+            "explanation": "The article states the observation explicitly."
+        });
+        let values = [
+            "self_direction",
+            "stimulation",
+            "hedonism",
+            "achievement",
+            "power",
+            "security",
+            "conformity",
+            "tradition",
+            "benevolence",
+            "universalism",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, key)| {
+            json!({
+                "key": key,
+                "score": 100 - index * 10,
+                "rank": index + 1,
+                "evidence": [evidence.clone()]
+            })
+        })
+        .collect::<Vec<_>>();
+        json!({
+            "description": "A profile",
+            "summary": "A profile summary.",
+            "short_summary": "A short profile summary.",
+            "tags": ["Profile"],
+            "inferred_date": "",
+            "inferred_lang": "en-US",
+            "key_points": ["A point"],
+            "audience": "Readers",
+            "experience_summary": "### Experience\n\n- Documented projects.",
+            "personality_analysis": "### Writing patterns\n\n- Evidence-based writing.",
+            "mbti_analysis": {
+                "type_code": "INTJ",
+                "confidence": "medium",
+                "dimensions": [
+                    {"axis": "I/E", "preference": "I", "confidence": "medium", "evidence": [evidence.clone()]},
+                    {"axis": "N/S", "preference": "N", "confidence": "medium", "evidence": [evidence.clone()]},
+                    {"axis": "T/F", "preference": "T", "confidence": "medium", "evidence": [evidence.clone()]},
+                    {"axis": "J/P", "preference": "J", "confidence": "medium", "evidence": [evidence.clone()]}
+                ]
+            },
+            "schwartz_values": values,
+            "unconscious_motivations": "### Tentative motivation\n\n- A source-grounded interpretation.",
+            "philosophical_references": "### Proposition\n\n- A source-grounded reference.",
+            "daily_timeline": [{
+                "date": "2026-01-01",
+                "summary": "The author published a documented project result.",
+                "evidence": [evidence]
+            }]
+        })
+    }
 
     #[test]
     fn sends_responses_input_as_message_items() {
@@ -485,6 +661,7 @@ mod tests {
     fn requires_a_complete_structured_translation() {
         let translation = translation_from_output(
             r##"{"title":"Translated title","content":"# Translated\n\n- [x] Done","metadata":{"description":"Translated description","summary":"Translated summary","short_summary":"Translated short summary","tags":["CTX"],"inferred_date":"","inferred_lang":"en-US","key_points":["Done"],"audience":"Readers","personality_analysis":"Writing patterns"}}"##,
+            "article",
         )
         .unwrap();
         assert_eq!(translation.title, "Translated title");
@@ -493,9 +670,11 @@ mod tests {
             translation.metadata.personality_analysis,
             "Writing patterns"
         );
-        assert!(translation_from_output(r#"{"title":"Only a title","content":""}"#).is_err());
-        assert!(translation_from_output(r##"{"title":"No metadata","content":"# Content","metadata":{"inferred_lang":"en-US"}}"##).is_err());
-        assert!(translation_from_output("not JSON").is_err());
+        assert!(
+            translation_from_output(r#"{"title":"Only a title","content":""}"#, "article").is_err()
+        );
+        assert!(translation_from_output(r##"{"title":"No metadata","content":"# Content","metadata":{"inferred_lang":"en-US"}}"##, "article").is_err());
+        assert!(translation_from_output("not JSON", "article").is_err());
     }
 
     #[test]
@@ -524,6 +703,7 @@ mod tests {
     fn requires_structured_metadata_with_a_canonical_original_language() {
         let metadata = metadata_from_output(
             r###"{"description":"A summary","inferred_lang":"ja-jp","tags":["CTX"],"experience_summary":"Worked on CTX documentation.","personality_analysis":"## Writing patterns"}"###,
+            "article",
         )
         .unwrap();
         assert_eq!(metadata.inferred_language, "ja-JP");
@@ -535,9 +715,9 @@ mod tests {
             metadata.metadata.personality_analysis,
             "## Writing patterns"
         );
-        assert!(metadata_from_output(r#"{"inferred_lang":"ja-JP"}"#).is_err());
-        assert!(metadata_from_output(r#"{"description":"No language"}"#).is_err());
-        assert!(metadata_from_output(r#"{"inferred_lang":"Japanese"}"#).is_err());
+        assert!(metadata_from_output(r#"{"inferred_lang":"ja-JP"}"#, "article").is_err());
+        assert!(metadata_from_output(r#"{"description":"No language"}"#, "article").is_err());
+        assert!(metadata_from_output(r#"{"inferred_lang":"Japanese"}"#, "article").is_err());
     }
 
     #[test]
@@ -547,8 +727,35 @@ mod tests {
         assert!(instructions.contains("resume format"));
         assert!(instructions.contains("GitHub Flavored Markdown"));
         assert!(instructions.contains("personality_analysis"));
+        assert!(instructions.contains("mbti_analysis"));
+        assert!(instructions.contains("schwartz_values"));
+        assert!(instructions.contains("daily_timeline"));
         assert!(instructions.contains("not a clinical or diagnostic assessment"));
         assert!(instructions.contains("supplied source article links"));
         assert!(metadata_instructions("article").contains("empty string unless"));
+    }
+
+    #[test]
+    fn requires_complete_structured_profile_summaries() {
+        let output = complete_profile_metadata();
+        let metadata = metadata_from_output(&output.to_string(), "profile").unwrap();
+        assert_eq!(metadata.metadata.mbti_analysis.type_code, "INTJ");
+        assert_eq!(metadata.metadata.mbti_analysis.dimensions.len(), 4);
+        assert_eq!(metadata.metadata.schwartz_values.len(), 10);
+        assert_eq!(metadata.metadata.daily_timeline[0].date, "2026-01-01");
+
+        let mut malformed = complete_profile_metadata();
+        malformed["schwartz_values"][0]["rank"] = json!(0);
+        assert!(metadata_from_output(&malformed.to_string(), "profile").is_err());
+    }
+
+    #[test]
+    fn requires_translated_profile_summaries_to_keep_their_structure() {
+        let translation = json!({
+            "title": "Translated profile",
+            "content": "# Profile",
+            "metadata": complete_profile_metadata()
+        });
+        assert!(translation_from_output(&translation.to_string(), "profile").is_ok());
     }
 }

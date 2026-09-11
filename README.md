@@ -41,11 +41,15 @@ public square for anyone to read.
   `#/u/{owner_id}` presents Linkit identity and avatar, a 52-week heatmap of
   published articles, and URL-state tabs for an objective AI-generated
   Markdown resume (`?tab=resume`), a source-grounded personality and
-  psychological reading (`?tab=personality`), and the published profile
-  article (`?tab=article`). Both summaries are derived from the author's
-  complete published article set and refresh asynchronously when an article is
-  published. The personality reading is explicitly non-clinical and cites the
-  published articles that support it.
+  psychological reading (`?tab=personality`), a structured MBTI evidence table
+  (`?tab=mbti`), a ten-dimension Schwartz value radar and ranking
+  (`?tab=schwartz`), tentative unconscious-motivation (`?tab=motivations`) and
+  philosophical-reference (`?tab=philosophy`) readings, a date-structured daily
+  timeline (`?tab=timeline`), and the published profile article
+  (`?tab=article`). The summaries are derived from the author's complete
+  published article set and refresh asynchronously when an article is
+  published. They retain source links, use the language matrix for translated
+  metadata, and keep psychological readings explicitly non-clinical.
   Profile documents are served from `/api/public/users/{owner_id}/profile` and
   do not appear in the square.
 - Root-only OpenAI-compatible routing configuration for `https://openai.ntnl.io/v1`.

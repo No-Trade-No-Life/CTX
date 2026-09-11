@@ -70,16 +70,20 @@ import type {
   AiConfiguration,
   AiRequest,
   AiRun,
+  DailyTimelineEntry,
   Document,
   DocumentComment,
   DocumentDetail,
   MediaUpload,
+  MbtiAnalysis,
   Me,
   PublishedMetadata,
   PublicDocument,
   PublicDocumentDetail,
   PublicUserProfile,
   PublicationTime,
+  SchwartzValue,
+  SummaryEvidence,
   SystemResources,
 } from "./lib/types"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -1588,6 +1592,89 @@ function publishedMetadata(value: Record<string, unknown>): PublishedMetadata {
     Array.isArray(value[key])
       ? value[key].filter((item): item is string => typeof item === "string")
       : []
+  const record = (candidate: unknown): Record<string, unknown> | null =>
+    candidate && typeof candidate === "object" && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>)
+      : null
+  const evidence = (candidate: unknown): SummaryEvidence[] =>
+    Array.isArray(candidate)
+      ? candidate.flatMap((item) => {
+          const itemRecord = record(item)
+          if (!itemRecord) return []
+          return [
+            {
+              article_title:
+                typeof itemRecord.article_title === "string"
+                  ? itemRecord.article_title
+                  : "",
+              article_url:
+                typeof itemRecord.article_url === "string"
+                  ? itemRecord.article_url
+                  : "",
+              explanation:
+                typeof itemRecord.explanation === "string"
+                  ? itemRecord.explanation
+                  : "",
+            },
+          ]
+        })
+      : []
+  const mbtiRecord = record(value.mbti_analysis)
+  const mbti_analysis: MbtiAnalysis = {
+    type_code:
+      typeof mbtiRecord?.type_code === "string" ? mbtiRecord.type_code : "",
+    confidence:
+      typeof mbtiRecord?.confidence === "string" ? mbtiRecord.confidence : "",
+    dimensions: Array.isArray(mbtiRecord?.dimensions)
+      ? mbtiRecord.dimensions.flatMap((item) => {
+          const dimension = record(item)
+          if (!dimension) return []
+          return [
+            {
+              axis: typeof dimension.axis === "string" ? dimension.axis : "",
+              preference:
+                typeof dimension.preference === "string"
+                  ? dimension.preference
+                  : "",
+              confidence:
+                typeof dimension.confidence === "string"
+                  ? dimension.confidence
+                  : "",
+              evidence: evidence(dimension.evidence),
+            },
+          ]
+        })
+      : [],
+  }
+  const schwartz_values: SchwartzValue[] = Array.isArray(value.schwartz_values)
+    ? value.schwartz_values.flatMap((item) => {
+        const schwartzValue = record(item)
+        if (!schwartzValue) return []
+        return [
+          {
+            key:
+              typeof schwartzValue.key === "string" ? schwartzValue.key : "",
+            score:
+              typeof schwartzValue.score === "number" ? schwartzValue.score : 0,
+            rank: typeof schwartzValue.rank === "number" ? schwartzValue.rank : 0,
+            evidence: evidence(schwartzValue.evidence),
+          },
+        ]
+      })
+    : []
+  const daily_timeline: DailyTimelineEntry[] = Array.isArray(value.daily_timeline)
+    ? value.daily_timeline.flatMap((item) => {
+        const entry = record(item)
+        if (!entry) return []
+        return [
+          {
+            date: typeof entry.date === "string" ? entry.date : "",
+            summary: typeof entry.summary === "string" ? entry.summary : "",
+            evidence: evidence(entry.evidence),
+          },
+        ]
+      })
+    : []
   return {
     description: strings("description"),
     summary: strings("summary"),
@@ -1599,6 +1686,11 @@ function publishedMetadata(value: Record<string, unknown>): PublishedMetadata {
     audience: strings("audience"),
     experience_summary: strings("experience_summary"),
     personality_analysis: strings("personality_analysis"),
+    mbti_analysis,
+    schwartz_values,
+    unconscious_motivations: strings("unconscious_motivations"),
+    philosophical_references: strings("philosophical_references"),
+    daily_timeline,
   }
 }
 
@@ -1612,7 +1704,12 @@ function hasEditorialMetadata(value: Record<string, unknown>) {
     metadata.key_points.length ||
     metadata.audience ||
     metadata.experience_summary ||
-    metadata.personality_analysis
+    metadata.personality_analysis ||
+    metadata.mbti_analysis.type_code ||
+    metadata.schwartz_values.length ||
+    metadata.unconscious_motivations ||
+    metadata.philosophical_references ||
+    metadata.daily_timeline.length
   )
 }
 
@@ -2283,26 +2380,434 @@ function highlightTextRange(
   }
 }
 
+const profileTabs = [
+  "resume",
+  "personality",
+  "mbti",
+  "schwartz",
+  "motivations",
+  "philosophy",
+  "timeline",
+  "article",
+] as const
+
+type ProfileTab = (typeof profileTabs)[number]
+
+const schwartzValueOrder = [
+  "self_direction",
+  "stimulation",
+  "hedonism",
+  "achievement",
+  "power",
+  "security",
+  "conformity",
+  "tradition",
+  "benevolence",
+  "universalism",
+]
+
+function isProfileTab(value: string | null): value is ProfileTab {
+  return profileTabs.some((tab) => tab === value)
+}
+
+function SummaryEvidenceList({ evidence }: { evidence: SummaryEvidence[] }) {
+  const { t } = useI18n()
+  if (!evidence.length)
+    return <span className="text-sm text-muted-foreground">{t("summaryNoEvidence")}</span>
+
+  return (
+    <ul className="space-y-2 text-sm leading-6">
+      {evidence.map((item, index) => (
+        <li key={`${item.article_url}-${index}`}>
+          <a
+            href={item.article_url}
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-primary underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+          >
+            {item.article_title}
+            <ExternalLinkIcon
+              className="ml-1 inline size-3 align-text-top"
+              aria-hidden="true"
+            />
+          </a>{" "}
+          <span className="text-muted-foreground">{item.explanation}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function SummaryMarkdown({ content }: { content: string }) {
+  return (
+    <article className="mt-10 max-w-[72ch]">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={markdownComponents}
+      >
+        {content}
+      </ReactMarkdown>
+    </article>
+  )
+}
+
+function ProfileSummaryHeader({
+  title,
+  description,
+}: {
+  title: string
+  description: string
+}) {
+  return (
+    <>
+      <h2 className="text-3xl font-semibold tracking-tight text-balance">
+        {title}
+      </h2>
+      <p className="mt-3 max-w-[72ch] text-sm leading-6 text-muted-foreground">
+        {description}
+      </p>
+    </>
+  )
+}
+
+function confidenceLabel(
+  confidence: string,
+  t: ReturnType<typeof useI18n>["t"]
+) {
+  const labels = {
+    high: t("summaryConfidenceHigh"),
+    medium: t("summaryConfidenceMedium"),
+    low: t("summaryConfidenceLow"),
+    undetermined: t("summaryConfidenceUndetermined"),
+  }
+  return labels[confidence as keyof typeof labels] ?? labels.undetermined
+}
+
+function MbtiSummary({
+  analysis,
+  metadataStatus,
+}: {
+  analysis: MbtiAnalysis
+  metadataStatus: PublicDocumentDetail["metadata_status"]
+}) {
+  const { t } = useI18n()
+  return (
+    <>
+      <ProfileSummaryHeader
+        title={t("mbtiTitle")}
+        description={t("mbtiDescription")}
+      />
+      {analysis.type_code ? (
+        <>
+          <div className="mt-8 flex flex-wrap items-center gap-3">
+            <span className="text-sm font-medium text-muted-foreground">
+              {t("mbtiClassification")}
+            </span>
+            <Badge variant="secondary" className="font-mono text-base">
+              {analysis.type_code}
+            </Badge>
+            <span className="text-sm text-muted-foreground">
+              {t("summaryConfidence")}: {confidenceLabel(analysis.confidence, t)}
+            </span>
+          </div>
+          <div className="mt-8 overflow-x-auto rounded-md border">
+            <table className="w-full min-w-[44rem] text-left text-sm">
+              <thead className="bg-muted/60 text-muted-foreground">
+                <tr>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    {t("mbtiDimension")}
+                  </th>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    {t("summaryResult")}
+                  </th>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    {t("summaryConfidence")}
+                  </th>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    {t("summaryEvidence")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {analysis.dimensions.map((dimension) => (
+                  <tr key={dimension.axis} className="align-top">
+                    <th scope="row" className="px-4 py-4 font-medium">
+                      {dimension.axis}
+                    </th>
+                    <td className="px-4 py-4 font-mono">
+                      {dimension.preference}
+                    </td>
+                    <td className="px-4 py-4">
+                      {confidenceLabel(dimension.confidence, t)}
+                    </td>
+                    <td className="px-4 py-4">
+                      <SummaryEvidenceList evidence={dimension.evidence} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : metadataStatus ? (
+        <Skeleton className="mt-8 h-72 w-full" />
+      ) : (
+        <p className="mt-8 text-sm leading-7 text-muted-foreground">
+          {t("mbtiEmpty")}
+        </p>
+      )}
+    </>
+  )
+}
+
+function SchwartzRadar({ values }: { values: SchwartzValue[] }) {
+  const { t } = useI18n()
+  const valuesByKey = new Map(values.map((value) => [value.key, value]))
+  const orderedValues = schwartzValueOrder.map(
+    (key) => valuesByKey.get(key) ?? { key, score: 0, rank: 0, evidence: [] }
+  )
+  const center = 180
+  const radius = 112
+  const point = (index: number, score: number) => {
+    const angle = (Math.PI * 2 * index) / orderedValues.length - Math.PI / 2
+    const distance = (radius * score) / 100
+    return [center + Math.cos(angle) * distance, center + Math.sin(angle) * distance]
+  }
+  const polygonPoints = (score: number) =>
+    orderedValues
+      .map((_, index) => point(index, score).map((value) => value.toFixed(1)).join(","))
+      .join(" ")
+  const dataPoints = orderedValues
+    .map((value, index) =>
+      point(index, value.score)
+        .map((item) => item.toFixed(1))
+        .join(",")
+    )
+    .join(" ")
+
+  return (
+    <figure className="mx-auto mt-8 max-w-xl" aria-labelledby="schwartz-radar-caption">
+      <svg viewBox="0 0 360 360" className="h-auto w-full" role="img">
+        <title>{t("schwartzRadarTitle")}</title>
+        {[25, 50, 75, 100].map((score) => (
+          <polygon
+            key={score}
+            points={polygonPoints(score)}
+            fill="none"
+            stroke="currentColor"
+            strokeOpacity="0.16"
+            strokeWidth="1"
+          />
+        ))}
+        {orderedValues.map((value, index) => {
+          const [x, y] = point(index, 100)
+          const [labelX, labelY] = point(index, 118)
+          return (
+            <g key={value.key}>
+              <line
+                x1={center}
+                y1={center}
+                x2={x}
+                y2={y}
+                stroke="currentColor"
+                strokeOpacity="0.16"
+              />
+              <text
+                x={labelX}
+                y={labelY}
+                textAnchor={
+                  labelX > center + 8
+                    ? "start"
+                    : labelX < center - 8
+                      ? "end"
+                      : "middle"
+                }
+                dominantBaseline={labelY < center - 8 ? "auto" : "hanging"}
+                className="fill-muted-foreground text-[9px]"
+              >
+                {schwartzValueLabel(value.key, t)}
+              </text>
+            </g>
+          )
+        })}
+        <polygon
+          points={dataPoints}
+          fill="var(--primary)"
+          fillOpacity="0.16"
+          stroke="var(--primary)"
+          strokeWidth="2"
+        />
+        {orderedValues.map((value, index) => {
+          const [x, y] = point(index, value.score)
+          return <circle key={value.key} cx={x} cy={y} r="3" fill="var(--primary)" />
+        })}
+      </svg>
+      <figcaption
+        id="schwartz-radar-caption"
+        className="mt-2 text-center text-sm text-muted-foreground"
+      >
+        {t("schwartzRadarCaption")}
+      </figcaption>
+    </figure>
+  )
+}
+
+function SchwartzSummary({
+  values,
+  metadataStatus,
+}: {
+  values: SchwartzValue[]
+  metadataStatus: PublicDocumentDetail["metadata_status"]
+}) {
+  const { t } = useI18n()
+  const rankedValues = values.slice().sort((left, right) => left.rank - right.rank)
+  return (
+    <>
+      <ProfileSummaryHeader
+        title={t("schwartzTitle")}
+        description={t("schwartzDescription")}
+      />
+      {values.length ? (
+        <>
+          <SchwartzRadar values={values} />
+          <div className="mt-10 overflow-x-auto rounded-md border">
+            <table className="w-full min-w-[46rem] text-left text-sm">
+              <thead className="bg-muted/60 text-muted-foreground">
+                <tr>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    {t("schwartzRank")}
+                  </th>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    {t("schwartzValue")}
+                  </th>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    {t("schwartzScore")}
+                  </th>
+                  <th scope="col" className="px-4 py-3 font-medium">
+                    {t("summaryEvidence")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {rankedValues.map((value) => (
+                  <tr key={value.key} className="align-top">
+                    <td className="px-4 py-4 font-mono text-muted-foreground">
+                      {value.rank}
+                    </td>
+                    <th scope="row" className="px-4 py-4 font-medium">
+                      {schwartzValueLabel(value.key, t)}
+                    </th>
+                    <td className="px-4 py-4 font-mono">{value.score}</td>
+                    <td className="px-4 py-4">
+                      <SummaryEvidenceList evidence={value.evidence} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : metadataStatus ? (
+        <Skeleton className="mt-8 h-96 w-full" />
+      ) : (
+        <p className="mt-8 text-sm leading-7 text-muted-foreground">
+          {t("schwartzEmpty")}
+        </p>
+      )}
+    </>
+  )
+}
+
+function DailyTimeline({
+  entries,
+  metadataStatus,
+}: {
+  entries: DailyTimelineEntry[]
+  metadataStatus: PublicDocumentDetail["metadata_status"]
+}) {
+  const { t } = useI18n()
+  const timeline = entries.slice().sort((left, right) => left.date.localeCompare(right.date))
+  return (
+    <>
+      <ProfileSummaryHeader
+        title={t("timelineTitle")}
+        description={t("timelineDescription")}
+      />
+      {timeline.length ? (
+        <ol className="mt-10 divide-y border-t">
+          {timeline.map((entry) => (
+            <li
+              key={entry.date}
+              className="grid gap-3 py-6 sm:grid-cols-[9rem_minmax(0,1fr)] sm:gap-8"
+            >
+              <time
+                dateTime={entry.date}
+                className="font-mono text-sm font-medium text-muted-foreground"
+              >
+                {entry.date}
+              </time>
+              <div>
+                <p className="text-base leading-7 text-foreground/90">
+                  {entry.summary}
+                </p>
+                <div className="mt-3">
+                  <SummaryEvidenceList evidence={entry.evidence} />
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : metadataStatus ? (
+        <Skeleton className="mt-8 h-72 w-full" />
+      ) : (
+        <p className="mt-8 text-sm leading-7 text-muted-foreground">
+          {t("timelineEmpty")}
+        </p>
+      )}
+    </>
+  )
+}
+
+function schwartzValueLabel(
+  key: string,
+  t: ReturnType<typeof useI18n>["t"]
+) {
+  const labels = {
+    self_direction: t("schwartzValueSelfDirection"),
+    stimulation: t("schwartzValueStimulation"),
+    hedonism: t("schwartzValueHedonism"),
+    achievement: t("schwartzValueAchievement"),
+    power: t("schwartzValuePower"),
+    security: t("schwartzValueSecurity"),
+    conformity: t("schwartzValueConformity"),
+    tradition: t("schwartzValueTradition"),
+    benevolence: t("schwartzValueBenevolence"),
+    universalism: t("schwartzValueUniversalism"),
+  }
+  return labels[key as keyof typeof labels] ?? key
+}
+
 function PublicUserPage() {
   const { ownerId = "" } = useParams()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { locale, t } = useI18n()
-  const activeTab =
-    searchParams.get("tab") === "article"
-      ? "article"
-      : searchParams.get("tab") === "personality"
-        ? "personality"
-        : "resume"
-  useBrowserTitle(
-    `${
-      activeTab === "resume"
-        ? t("experienceSummary")
-        : activeTab === "personality"
-          ? t("personalityAnalysis")
-          : t("profileArticle")
-    } — ${t("pageTitlePersonalPage")}`
-  )
+  const requestedTab = searchParams.get("tab")
+  const activeTab: ProfileTab = isProfileTab(requestedTab)
+    ? requestedTab
+    : "resume"
+  const activeTabTitles: Record<ProfileTab, string> = {
+    resume: t("experienceSummary"),
+    personality: t("personalityAnalysis"),
+    mbti: t("mbtiTitle"),
+    schwartz: t("schwartzTitle"),
+    motivations: t("motivationsTitle"),
+    philosophy: t("philosophyTitle"),
+    timeline: t("timelineTitle"),
+    article: t("profileArticle"),
+  }
+  useBrowserTitle(`${activeTabTitles[activeTab]} — ${t("pageTitlePersonalPage")}`)
   const { isReady, isAuthenticated, session } = useAuthMini()
   const profile = useQuery({
     queryKey: ["public-user-profile", ownerId, locale],
@@ -2423,12 +2928,41 @@ function PublicUserPage() {
           }}
           className="border-t pt-10"
         >
-          <TabsList aria-label={t("personalPage")}>
-            <TabsTrigger value="resume">{t("profileTabResume")}</TabsTrigger>
-            <TabsTrigger value="personality">
+          {document.is_translation_fallback ? (
+            <Alert>
+              <LanguagesIcon data-icon="inline-start" />
+              <AlertTitle>{t("translationInProgressTitle")}</AlertTitle>
+              <AlertDescription>{t("translationInProgress")}</AlertDescription>
+            </Alert>
+          ) : null}
+          <TabsList
+            aria-label={t("personalPage")}
+            className="mt-6 h-auto w-full max-w-full justify-start overflow-x-auto p-1"
+          >
+            <TabsTrigger value="resume" className="shrink-0 px-3">
+              {t("profileTabResume")}
+            </TabsTrigger>
+            <TabsTrigger value="personality" className="shrink-0 px-3">
               {t("profileTabPersonality")}
             </TabsTrigger>
-            <TabsTrigger value="article">{t("profileTabArticle")}</TabsTrigger>
+            <TabsTrigger value="mbti" className="shrink-0 px-3">
+              {t("profileTabMbti")}
+            </TabsTrigger>
+            <TabsTrigger value="schwartz" className="shrink-0 px-3">
+              {t("profileTabSchwartz")}
+            </TabsTrigger>
+            <TabsTrigger value="motivations" className="shrink-0 px-3">
+              {t("profileTabMotivations")}
+            </TabsTrigger>
+            <TabsTrigger value="philosophy" className="shrink-0 px-3">
+              {t("profileTabPhilosophy")}
+            </TabsTrigger>
+            <TabsTrigger value="timeline" className="shrink-0 px-3">
+              {t("profileTabTimeline")}
+            </TabsTrigger>
+            <TabsTrigger value="article" className="shrink-0 px-3">
+              {t("profileTabArticle")}
+            </TabsTrigger>
           </TabsList>
           <TabsContent value="resume" className="mt-8 max-w-[72ch]">
             <h2 className="text-3xl font-semibold tracking-tight text-balance">
@@ -2483,6 +3017,54 @@ function PublicUserPage() {
               </p>
             )}
           </TabsContent>
+          <TabsContent value="mbti" className="mt-8 max-w-5xl">
+            <MbtiSummary
+              analysis={document.metadata.mbti_analysis}
+              metadataStatus={document.metadata_status}
+            />
+          </TabsContent>
+          <TabsContent value="schwartz" className="mt-8 max-w-5xl">
+            <SchwartzSummary
+              values={document.metadata.schwartz_values}
+              metadataStatus={document.metadata_status}
+            />
+          </TabsContent>
+          <TabsContent value="motivations" className="mt-8 max-w-[72ch]">
+            <ProfileSummaryHeader
+              title={t("motivationsTitle")}
+              description={t("motivationsDescription")}
+            />
+            {document.metadata.unconscious_motivations ? (
+              <SummaryMarkdown content={document.metadata.unconscious_motivations} />
+            ) : document.metadata_status ? (
+              <Skeleton className="mt-8 h-64 w-full" />
+            ) : (
+              <p className="mt-8 text-sm leading-7 text-muted-foreground">
+                {t("motivationsEmpty")}
+              </p>
+            )}
+          </TabsContent>
+          <TabsContent value="philosophy" className="mt-8 max-w-[72ch]">
+            <ProfileSummaryHeader
+              title={t("philosophyTitle")}
+              description={t("philosophyDescription")}
+            />
+            {document.metadata.philosophical_references ? (
+              <SummaryMarkdown content={document.metadata.philosophical_references} />
+            ) : document.metadata_status ? (
+              <Skeleton className="mt-8 h-64 w-full" />
+            ) : (
+              <p className="mt-8 text-sm leading-7 text-muted-foreground">
+                {t("philosophyEmpty")}
+              </p>
+            )}
+          </TabsContent>
+          <TabsContent value="timeline" className="mt-8 max-w-5xl">
+            <DailyTimeline
+              entries={document.metadata.daily_timeline}
+              metadataStatus={document.metadata_status}
+            />
+          </TabsContent>
           <TabsContent value="article" className="mt-8 max-w-[72ch]">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
@@ -2504,15 +3086,6 @@ function PublicUserPage() {
                 formatDate(document.published_at, locale)
               )}
             </p>
-            {document.is_translation_fallback ? (
-              <Alert className="mt-6">
-                <LanguagesIcon data-icon="inline-start" />
-                <AlertTitle>{t("translationInProgressTitle")}</AlertTitle>
-                <AlertDescription>
-                  {t("translationInProgress")}
-                </AlertDescription>
-              </Alert>
-            ) : null}
             <article className="mt-10 max-w-[72ch]">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
