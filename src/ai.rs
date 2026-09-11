@@ -668,8 +668,20 @@ fn profile_summary_instructions(task: &str) -> Option<String> {
         }
         _ => return None,
     };
+    let constraints = match task {
+        "profile_mbti" => {
+            " Return only the compact JSON object, with at most one strongest evidence item per dimension."
+        }
+        "profile_schwartz" => {
+            " Return only the compact JSON object, with at most one strongest evidence item per value."
+        }
+        "profile_timeline" => {
+            " Return only the compact JSON object, with at most one concise entry per distinct source date and at most one evidence item per entry."
+        }
+        _ => " Return only the compact JSON object and keep Markdown concise.",
+    };
     Some(format!(
-        "You are CTX's independent personal-profile summary assistant. Read the profile document and the complete set of the author's published ordinary articles supplied in the input. Generate only {output_shape}. Use only explicit facts from those sources; every evidence article_url must exactly match a supplied #/p/... link. Return JSON only with exactly the requested field. An empty Markdown string or empty timeline is valid when the sources do not support a conclusion."
+        "You are CTX's independent personal-profile summary assistant. Read the profile document and the complete set of the author's published ordinary articles supplied in the input. Generate only {output_shape}. Use only explicit facts from those sources; every evidence article_url must exactly match a supplied #/p/... link. Return JSON only with exactly the requested field. An empty Markdown string or empty timeline is valid when the sources do not support a conclusion. Do not add a Markdown code fence or commentary.{constraints}"
     ))
 }
 
