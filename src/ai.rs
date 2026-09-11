@@ -178,7 +178,7 @@ async fn extract_profile_summary(
 }
 
 fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummaryPatch, AiError> {
-    let value: Value = serde_json::from_str(output).map_err(|_| AiError::Response)?;
+    let value = json_value_from_output(output)?;
     match task {
         "profile_experience"
         | "profile_personality"
@@ -257,6 +257,16 @@ fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummar
         }
         _ => Err(AiError::Response),
     }
+}
+
+fn json_value_from_output(output: &str) -> Result<Value, AiError> {
+    let trimmed = output.trim();
+    let unwrapped = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```JSON"))
+        .map(|value| value.strip_suffix("```").unwrap_or(value).trim())
+        .unwrap_or(trimmed);
+    serde_json::from_str(unwrapped).map_err(|_| AiError::Response)
 }
 
 fn summary_value<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
@@ -987,6 +997,13 @@ mod tests {
             profile_summary_instructions("profile_timeline")
                 .unwrap()
                 .contains("daily_timeline")
+        );
+        assert!(
+            profile_summary_from_output(
+                "```json\n{\"experience_summary\":\"Built CTX.\"}\n```",
+                "profile_experience"
+            )
+            .is_ok()
         );
         assert!(profile_summary_from_output("{}", "profile_mbti").is_err());
     }
