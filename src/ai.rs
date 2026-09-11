@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::{
@@ -108,34 +108,6 @@ struct MetadataOutput {
     daily_timeline: Vec<DailyTimelineEntry>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ProfileMarkdownOutput {
-    #[serde(default)]
-    experience_summary: String,
-    #[serde(default)]
-    personality_analysis: String,
-    #[serde(default)]
-    unconscious_motivations: String,
-    #[serde(default)]
-    philosophical_references: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProfileMbtiOutput {
-    mbti_analysis: MbtiAnalysis,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProfileSchwartzOutput {
-    schwartz_values: Vec<SchwartzValue>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProfileTimelineOutput {
-    #[serde(default)]
-    daily_timeline: Vec<DailyTimelineEntry>,
-}
-
 enum ProfileSummaryPatch {
     Experience(String),
     Personality(String),
@@ -206,19 +178,19 @@ async fn extract_profile_summary(
 }
 
 fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummaryPatch, AiError> {
+    let value: Value = serde_json::from_str(output).map_err(|_| AiError::Response)?;
     match task {
         "profile_experience"
         | "profile_personality"
         | "profile_motivations"
         | "profile_philosophy" => {
-            let output: ProfileMarkdownOutput =
-                serde_json::from_str(output).map_err(|_| AiError::Response)?;
-            let content = match task {
-                "profile_experience" => output.experience_summary,
-                "profile_personality" => output.personality_analysis,
-                "profile_motivations" => output.unconscious_motivations,
-                _ => output.philosophical_references,
+            let field = match task {
+                "profile_experience" => "experience_summary",
+                "profile_personality" => "personality_analysis",
+                "profile_motivations" => "unconscious_motivations",
+                _ => "philosophical_references",
             };
+            let content = summary_string(&value, field).ok_or(AiError::Response)?;
             Ok(match task {
                 "profile_experience" => ProfileSummaryPatch::Experience(content),
                 "profile_personality" => ProfileSummaryPatch::Personality(content),
@@ -227,15 +199,17 @@ fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummar
             })
         }
         "profile_mbti" => {
-            let output: ProfileMbtiOutput =
-                serde_json::from_str(output).map_err(|_| AiError::Response)?;
-            if !valid_mbti_type(&output.mbti_analysis) || output.mbti_analysis.dimensions.len() != 4
-            {
+            let analysis: MbtiAnalysis = serde_json::from_value(
+                summary_value(&value, "mbti_analysis")
+                    .ok_or(AiError::Response)?
+                    .clone(),
+            )
+            .map_err(|_| AiError::Response)?;
+            if !valid_mbti_type(&analysis) || analysis.dimensions.len() != 4 {
                 return Err(AiError::Response);
             }
             const AXES: [&str; 4] = ["I/E", "N/S", "T/F", "J/P"];
-            if !output
-                .mbti_analysis
+            if !analysis
                 .dimensions
                 .iter()
                 .zip(AXES)
@@ -243,11 +217,9 @@ fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummar
             {
                 return Err(AiError::Response);
             }
-            Ok(ProfileSummaryPatch::Mbti(output.mbti_analysis))
+            Ok(ProfileSummaryPatch::Mbti(analysis))
         }
         "profile_schwartz" => {
-            let output: ProfileSchwartzOutput =
-                serde_json::from_str(output).map_err(|_| AiError::Response)?;
             const VALUES: [&str; 10] = [
                 "self_direction",
                 "stimulation",
@@ -260,21 +232,55 @@ fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummar
                 "benevolence",
                 "universalism",
             ];
-            if !valid_schwartz_values(&output.schwartz_values, &VALUES) {
+            let values: Vec<SchwartzValue> = serde_json::from_value(
+                summary_value(&value, "schwartz_values")
+                    .ok_or(AiError::Response)?
+                    .clone(),
+            )
+            .map_err(|_| AiError::Response)?;
+            if !valid_schwartz_values(&values, &VALUES) {
                 return Err(AiError::Response);
             }
-            Ok(ProfileSummaryPatch::Schwartz(output.schwartz_values))
+            Ok(ProfileSummaryPatch::Schwartz(values))
         }
         "profile_timeline" => {
-            let output: ProfileTimelineOutput =
-                serde_json::from_str(output).map_err(|_| AiError::Response)?;
-            if !valid_daily_timeline(&output.daily_timeline) {
+            let entries: Vec<DailyTimelineEntry> = serde_json::from_value(
+                summary_value(&value, "daily_timeline")
+                    .ok_or(AiError::Response)?
+                    .clone(),
+            )
+            .map_err(|_| AiError::Response)?;
+            if !valid_daily_timeline(&entries) {
                 return Err(AiError::Response);
             }
-            Ok(ProfileSummaryPatch::Timeline(output.daily_timeline))
+            Ok(ProfileSummaryPatch::Timeline(entries))
         }
         _ => Err(AiError::Response),
     }
+}
+
+fn summary_value<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
+    value
+        .get(field)
+        .or_else(|| {
+            value
+                .get("metadata")
+                .and_then(|metadata| metadata.get(field))
+        })
+        .or_else(|| (value.is_array() || value.is_object()).then_some(value))
+}
+
+fn summary_string(value: &Value, field: &str) -> Option<String> {
+    summary_value(value, field)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            value
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .or_else(|| value.as_str().map(str::to_owned))
 }
 
 fn apply_profile_summary_patch(
