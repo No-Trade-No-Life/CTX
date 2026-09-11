@@ -28,9 +28,12 @@ public square for anyone to read.
   its editor directly from the public reader.
 - Every author can create one dedicated profile document. Its public page at
   `#/u/{owner_id}` presents Linkit identity and avatar, a 52-week heatmap of
-  published articles, an objective AI-generated experience summary, and the
-  published profile article. Profile documents are served from
-  `/api/public/users/{owner_id}/profile` and do not appear in the square.
+  published articles, and URL-state tabs for an objective AI-generated
+  Markdown resume (`?tab=resume`) and the published profile article
+  (`?tab=article`). The resume is derived from the author's complete published
+  article set and refreshes asynchronously when an article is published.
+  Profile documents are served from `/api/public/users/{owner_id}/profile` and
+  do not appear in the square.
 - Root-only OpenAI-compatible routing configuration for `https://openai.ntnl.io/v1`.
   The server encrypts the configured API key with a host-local AES-GCM key; it
   is never returned to the browser.

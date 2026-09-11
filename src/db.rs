@@ -301,6 +301,12 @@ struct PublishedDocument {
     published_at: i64,
 }
 
+#[derive(Clone, Debug)]
+pub struct PublishedArticle {
+    pub title: String,
+    pub content: String,
+}
+
 impl Database {
     pub fn open(state_directory: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let state_directory = state_directory.as_ref();
@@ -325,6 +331,7 @@ impl Database {
         connection.execute("DROP TABLE IF EXISTS author_language_preferences", [])?;
         backfill_published_source_languages(&connection)?;
         backfill_published_metadata_requests(&mut connection)?;
+        backfill_profile_resume_summaries(&mut connection)?;
         connection.execute(
             "INSERT INTO app_meta(key, value) VALUES ('ai_base_url', 'https://openai.ntnl.io/v1') ON CONFLICT(key) DO NOTHING",
             [],
@@ -599,6 +606,13 @@ impl Database {
             "",
             updated_at,
         )?;
+        if detail.document.kind == "article" {
+            force_enqueue_author_profile_metadata(
+                &transaction,
+                &detail.document.owner_id,
+                updated_at,
+            )?;
+        }
         transaction.commit()?;
         detail.document.status = "published".to_owned();
         detail.document.visibility = "public".to_owned();
@@ -751,6 +765,19 @@ impl Database {
         })
     }
 
+    pub fn published_articles_for_author(
+        &self,
+        owner_id: &str,
+    ) -> Result<Vec<PublishedArticle>, DatabaseError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT d.published_title, r.content FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.owner_id = ?1 AND d.document_kind = 'article' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_revision_id IS NOT NULL ORDER BY d.published_at, d.id",
+        )?;
+        Ok(statement
+            .query_map([owner_id], published_article_from_row)?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn request_public_translation(
         &self,
         document_id: &str,
@@ -897,6 +924,18 @@ impl Database {
         Ok(())
     }
 
+    pub fn invalidate_profile_translation_metadata(
+        &self,
+        document_id: &str,
+        source_revision_id: &str,
+    ) -> Result<(), DatabaseError> {
+        self.connection()?.execute(
+            "DELETE FROM document_metadata WHERE document_id = ?1 AND source_revision_id = ?2 AND language != (SELECT published_source_language FROM documents WHERE id = ?1)",
+            params![document_id, source_revision_id],
+        )?;
+        self.requeue_translations_missing_metadata(document_id, source_revision_id)
+    }
+
     pub fn store_published_translation(
         &self,
         document_id: &str,
@@ -993,6 +1032,34 @@ fn force_enqueue_ai_request(
         "INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6) ON CONFLICT(document_id, source_revision_id, task, target_language) DO UPDATE SET status = 'queued', result_summary = NULL, error = NULL, started_at = NULL, completed_at = NULL WHERE ai_requests.status != 'running'",
         params![Uuid::new_v4().to_string(), document_id, source_revision_id, task, target_language, created_at],
     )?;
+    Ok(())
+}
+
+fn force_enqueue_author_profile_metadata(
+    transaction: &rusqlite::Transaction<'_>,
+    owner_id: &str,
+    created_at: i64,
+) -> Result<(), DatabaseError> {
+    let profiles = {
+        let mut statement = transaction.prepare(
+            "SELECT id, published_revision_id FROM documents WHERE owner_id = ?1 AND document_kind = 'profile' AND status = 'published' AND visibility = 'public' AND published_revision_id IS NOT NULL",
+        )?;
+        statement
+            .query_map([owner_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (document_id, source_revision_id) in profiles {
+        force_enqueue_ai_request(
+            transaction,
+            &document_id,
+            &source_revision_id,
+            "metadata",
+            "",
+            created_at,
+        )?;
+    }
     Ok(())
 }
 
@@ -1272,6 +1339,47 @@ fn backfill_published_metadata_requests(connection: &mut Connection) -> Result<(
             now(),
         )?;
     }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn backfill_profile_resume_summaries(connection: &mut Connection) -> Result<(), DatabaseError> {
+    const PROFILE_RESUME_SUMMARY_VERSION: &str = "1";
+    let version: Option<String> = connection
+        .query_row(
+            "SELECT value FROM app_meta WHERE key = 'profile_resume_summary_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if version.as_deref() == Some(PROFILE_RESUME_SUMMARY_VERSION) {
+        return Ok(());
+    }
+    let transaction = connection.transaction()?;
+    let profiles = {
+        let mut statement = transaction.prepare(
+            "SELECT id, published_revision_id FROM documents WHERE document_kind = 'profile' AND status = 'published' AND visibility = 'public' AND published_revision_id IS NOT NULL",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (document_id, source_revision_id) in profiles {
+        force_enqueue_ai_request(
+            &transaction,
+            &document_id,
+            &source_revision_id,
+            "metadata",
+            "",
+            now(),
+        )?;
+    }
+    transaction.execute(
+        "INSERT INTO app_meta(key, value) VALUES ('profile_resume_summary_version', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [PROFILE_RESUME_SUMMARY_VERSION],
+    )?;
     transaction.commit()?;
     Ok(())
 }
@@ -1582,6 +1690,13 @@ fn published_document_from_row(row: &Row<'_>) -> rusqlite::Result<PublishedDocum
     })
 }
 
+fn published_article_from_row(row: &Row<'_>) -> rusqlite::Result<PublishedArticle> {
+    Ok(PublishedArticle {
+        title: row.get(0)?,
+        content: row.get(1)?,
+    })
+}
+
 fn ai_request_from_row(row: &Row<'_>) -> rusqlite::Result<AiRequest> {
     Ok(AiRequest {
         id: row.get(0)?,
@@ -1733,6 +1848,18 @@ mod tests {
             .publish_document(&profile.document.id, &profile_source.revision.id)
             .unwrap()
             .unwrap();
+        let profile_request_id = database
+            .ai_requests()
+            .unwrap()
+            .into_iter()
+            .find(|request| {
+                request.document_id == profile.document.id && request.task == "metadata"
+            })
+            .map(|request| request.id)
+            .unwrap();
+        database
+            .complete_ai_request(&profile_request_id, "Initial profile metadata")
+            .unwrap();
 
         let article = database
             .create_document(&NewDocument {
@@ -1747,6 +1874,19 @@ mod tests {
             .publish_document(&article.document.id, &article.revision.id)
             .unwrap()
             .unwrap();
+        let published_articles = database.published_articles_for_author("author-a").unwrap();
+        assert_eq!(published_articles.len(), 1);
+        assert_eq!(published_articles[0].title, "An article");
+        assert_eq!(published_articles[0].content, "# Article");
+        assert_eq!(
+            database
+                .ai_requests()
+                .unwrap()
+                .into_iter()
+                .find(|request| request.id == profile_request_id)
+                .map(|request| request.status),
+            Some("queued".to_owned())
+        );
 
         let mut profile_metadata = metadata("en-US", "Profile description");
         profile_metadata.experience_summary =
@@ -1767,6 +1907,32 @@ mod tests {
                 &profile_metadata,
             )
             .unwrap();
+        database
+            .store_published_translation(
+                &profile.document.id,
+                &profile_source.revision.id,
+                "zh-CN",
+                "作者简介",
+                "# 简介",
+                &metadata("zh-CN", "译文简介"),
+            )
+            .unwrap();
+        database
+            .invalidate_profile_translation_metadata(
+                &profile.document.id,
+                &profile_source.revision.id,
+            )
+            .unwrap();
+        let localized_profile = database
+            .public_user_profile("author-a", Some("zh-CN"))
+            .unwrap()
+            .profile
+            .unwrap();
+        assert!(localized_profile.is_translation_fallback);
+        assert_eq!(
+            localized_profile.translation_status.as_deref(),
+            Some("queued")
+        );
 
         assert_eq!(database.public_documents(None).unwrap().len(), 1);
         assert!(

@@ -201,11 +201,13 @@ const englishCopy = defineCopy({
   profileActivityDay: "{date}: {count} published articles",
   profileActivityLess: "Less",
   profileActivityMore: "More",
-  experienceSummary: "Experience summary",
+  experienceSummary: "Experience resume",
   experienceSummaryDescription:
-    "An objective summary generated from the published profile article.",
+    "A factual resume generated from all published articles by this author.",
   experienceSummaryEmpty:
-    "The published profile article does not state experience facts yet.",
+    "The author's published articles do not state experience facts yet.",
+  profileTabResume: "Experience resume",
+  profileTabArticle: "Profile article",
   profileArticle: "Profile article",
   profileArticleUnavailableTitle: "No published profile article",
   profileArticleUnavailableDescription:
@@ -394,9 +396,12 @@ const chineseCopy: Copy = {
   profileActivityDay: "{date}：发布 {count} 篇文章",
   profileActivityLess: "少",
   profileActivityMore: "多",
-  experienceSummary: "经历概述",
-  experienceSummaryDescription: "根据已发布的主页文章自动生成的客观中立概述。",
-  experienceSummaryEmpty: "已发布的主页文章暂未包含可概述的经历事实。",
+  experienceSummary: "经历简历",
+  experienceSummaryDescription:
+    "根据该作者全部已发布文章自动生成的客观中立简历。",
+  experienceSummaryEmpty: "该作者已发布的文章暂未包含可整理为简历的经历事实。",
+  profileTabResume: "经历简历",
+  profileTabArticle: "主页文章",
   profileArticle: "主页文章",
   profileArticleUnavailableTitle: "尚未发布主页文章",
   profileArticleUnavailableDescription: "这位作者尚未发布个人主页。",
@@ -588,11 +593,13 @@ const japaneseCopy: Copy = {
   profileActivityDay: "{date}: 公開済みの記事 {count} 件",
   profileActivityLess: "少",
   profileActivityMore: "多",
-  experienceSummary: "経歴の要約",
+  experienceSummary: "経歴レジュメ",
   experienceSummaryDescription:
-    "公開されたプロフィール記事から自動生成された、客観的で中立な要約です。",
+    "この執筆者が公開したすべての記事から自動生成された、客観的で中立なレジュメです。",
   experienceSummaryEmpty:
-    "公開されたプロフィール記事には、要約できる経歴の事実がまだありません。",
+    "この執筆者が公開した記事には、レジュメに整理できる経歴の事実がまだありません。",
+  profileTabResume: "経歴レジュメ",
+  profileTabArticle: "プロフィール記事",
   profileArticle: "プロフィール記事",
   profileArticleUnavailableTitle: "公開されたプロフィール記事はありません",
   profileArticleUnavailableDescription:
@@ -791,11 +798,13 @@ const spanishCopy: Copy = {
   profileActivityDay: "{date}: {count} artículos publicados",
   profileActivityLess: "Menos",
   profileActivityMore: "Más",
-  experienceSummary: "Resumen de experiencia",
+  experienceSummary: "Currículum de experiencia",
   experienceSummaryDescription:
-    "Resumen objetivo generado a partir del artículo de perfil publicado.",
+    "Currículum objetivo generado a partir de todos los artículos publicados por esta persona.",
   experienceSummaryEmpty:
-    "El artículo de perfil publicado aún no contiene hechos de experiencia.",
+    "Los artículos publicados por esta persona aún no contienen hechos de experiencia.",
+  profileTabResume: "Currículum",
+  profileTabArticle: "Artículo de perfil",
   profileArticle: "Artículo de perfil",
   profileArticleUnavailableTitle: "No hay artículo de perfil publicado",
   profileArticleUnavailableDescription:
