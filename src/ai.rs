@@ -848,7 +848,13 @@ async fn request_output(
     if !response.status().is_success() {
         return Err(AiError::Rejected(response.text().await?));
     }
-    output_text_from_sse(&response.text().await?).ok_or(AiError::Response)
+    let body = response.text().await?;
+    output_text_from_sse(&body).ok_or_else(|| {
+        AiError::Rejected(format!(
+            "AI response contained no text output events: {}",
+            sse_event_types(&body)
+        ))
+    })
 }
 
 fn request_body(model: &str, instructions: &str, input: &str) -> serde_json::Value {
@@ -875,6 +881,22 @@ fn output_text_from_sse(sse: &str) -> Option<String> {
         .filter_map(|event| event.text)
         .collect::<String>();
     (!output.trim().is_empty()).then_some(output)
+}
+
+fn sse_event_types(sse: &str) -> String {
+    let mut kinds = BTreeSet::new();
+    for data in sse.lines().filter_map(|line| line.strip_prefix("data:")) {
+        if let Ok(value) = serde_json::from_str::<Value>(data.trim())
+            && let Some(kind) = value.get("type").and_then(Value::as_str)
+        {
+            kinds.insert(kind.to_owned());
+        }
+    }
+    if kinds.is_empty() {
+        "none".to_owned()
+    } else {
+        kinds.into_iter().collect::<Vec<_>>().join(",")
+    }
 }
 
 fn system_prompt(task: &AiTask) -> String {
