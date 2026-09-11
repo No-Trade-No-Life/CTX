@@ -19,11 +19,18 @@ public square for anyone to read.
   writing, a slash-command menu, selection formatting, GFM tables and task
   lists, image and link insertion, published-document references, and an
   always-available Markdown source view. Mermaid code fences remain Markdown
-  code blocks and keep their language marker when saved.
+  code blocks and keep their language marker when saved. Published readers
+  render GFM, Mermaid diagrams, inline KaTeX formulas (`$...$`), and displayed
+  KaTeX formulas (`$$...$$`).
 - A public square at `#/square`, a public article reader at
   `#/p/{document_id}`, and public APIs at `/api/public/documents` and
   `/api/public/documents/{document_id}`. A signed-in article author can open
   its editor directly from the public reader.
+- Every author can create one dedicated profile document. Its public page at
+  `#/u/{owner_id}` presents Linkit identity and avatar, a 52-week heatmap of
+  published articles, an objective AI-generated experience summary, and the
+  published profile article. Profile documents are served from
+  `/api/public/users/{owner_id}/profile` and do not appear in the square.
 - Root-only OpenAI-compatible routing configuration for `https://openai.ntnl.io/v1`.
   The server encrypts the configured API key with a host-local AES-GCM key; it
   is never returned to the browser.

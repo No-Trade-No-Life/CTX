@@ -10,6 +10,7 @@ export type Document = {
   title: string
   source_language: string
   status: "draft" | "published"
+  kind: "article" | "profile"
   metadata: Record<string, unknown>
   current_revision_id: string
   published_revision_id: string | null
@@ -52,6 +53,7 @@ export type PublishedMetadata = {
   inferred_lang: string
   key_points: string[]
   audience: string
+  experience_summary: string
 }
 
 export type PublicDocumentDetail = {
@@ -69,6 +71,12 @@ export type PublicDocumentDetail = {
   translation_status: "queued" | "running" | "succeeded" | "failed" | null
   is_translation_fallback: boolean
   published_at: number
+}
+
+export type PublicUserProfile = {
+  owner_id: string
+  profile: PublicDocumentDetail | null
+  published_article_dates: number[]
 }
 
 export type AiConfiguration = {

@@ -31,10 +31,13 @@ import {
   Settings2Icon,
   ShieldCheckIcon,
   SparklesIcon,
+  UserRoundIcon,
   type LucideIcon,
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
+import rehypeKatex from "rehype-katex"
 import remarkGfm from "remark-gfm"
+import remarkMath from "remark-math"
 import {
   Navigate,
   Route,
@@ -68,6 +71,7 @@ import type {
   PublishedMetadata,
   PublicDocument,
   PublicDocumentDetail,
+  PublicUserProfile,
   SystemResources,
 } from "./lib/types"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -146,6 +150,7 @@ export function PublicApp() {
         <Route path="/" element={<Navigate to="/square" replace />} />
         <Route path="/square" element={<SquarePage />} />
         <Route path="/p/:documentId" element={<PublicDocumentPage />} />
+        <Route path="/u/:ownerId" element={<PublicUserPage />} />
         <Route path="*" element={<Navigate to="/square" replace />} />
       </Routes>
       <Toaster />
@@ -358,10 +363,22 @@ function CtxShell({ token }: { token: string }) {
 
 function DocumentListPage({ token }: { token: string }) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { locale, t } = useI18n()
   const documents = useQuery({
     queryKey: ["documents", token],
     queryFn: () => request<Document[]>("/api/v1/documents", token),
+  })
+  const profileDocument = useMutation({
+    mutationFn: () =>
+      request<DocumentDetail>("/api/v1/profile-document", token, {
+        method: "POST",
+      }),
+    onSuccess: (detail) => {
+      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      navigate(`/documents/${detail.document.id}`)
+    },
+    onError: showError,
   })
 
   if (documents.isPending) return <PageSkeleton />
@@ -379,10 +396,27 @@ function DocumentListPage({ token }: { token: string }) {
             {t("documentsDescription")}
           </p>
         </div>
-        <Button onClick={() => navigate("/documents/new")}>
-          <PlusIcon data-icon="inline-start" />
-          {t("newDocument")}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            disabled={profileDocument.isPending}
+            onClick={() => profileDocument.mutate()}
+          >
+            {profileDocument.isPending ? (
+              <LoaderCircleIcon
+                className="animate-spin"
+                data-icon="inline-start"
+              />
+            ) : (
+              <UserRoundIcon data-icon="inline-start" />
+            )}
+            {t("editPersonalPage")}
+          </Button>
+          <Button onClick={() => navigate("/documents/new")}>
+            <PlusIcon data-icon="inline-start" />
+            {t("newDocument")}
+          </Button>
+        </div>
       </section>
       {items.length === 0 ? (
         <Empty className="min-h-80">
@@ -411,7 +445,13 @@ function DocumentListPage({ token }: { token: string }) {
                 document={document}
                 updatedAt={formatDate(document.updated_at, locale)}
                 onOpen={() => navigate(`/documents/${document.id}`)}
-                onViewPublic={() => navigate(`/p/${document.id}`)}
+                onViewPublic={() =>
+                  navigate(
+                    document.kind === "profile"
+                      ? `/u/${document.owner_id}`
+                      : `/p/${document.id}`
+                  )
+                }
               />
             </div>
           ))}
@@ -434,6 +474,7 @@ function DocumentRow({
 }) {
   const { t } = useI18n()
   const isPublished = document.status === "published"
+  const isProfile = document.kind === "profile"
   return (
     <article className="group flex flex-wrap items-center gap-3 py-4 sm:flex-nowrap">
       <Button
@@ -449,6 +490,7 @@ function DocumentRow({
           </span>
         </span>
       </Button>
+      {isProfile ? <Badge variant="outline">{t("personalPage")}</Badge> : null}
       <Badge variant={isPublished ? "secondary" : "outline"}>
         {isPublished ? t("published") : t("draft")}
       </Badge>
@@ -498,7 +540,7 @@ function NewDocumentPage({ token }: { token: string }) {
           source_language: sourceLanguage.trim(),
           content,
         }),
-    }),
+      }),
     onSuccess: (detail) => {
       clearNewDocumentDraft()
       toast.success(t("documentCreated"))
@@ -570,12 +612,7 @@ function ExistingDocumentPage({ token }: { token: string }) {
       <PageError error={document.error ?? new Error(t("documentNotFound"))} />
     )
 
-  return (
-    <ExistingDocumentEditor
-      token={token}
-      detail={document.data}
-    />
-  )
+  return <ExistingDocumentEditor token={token} detail={document.data} />
 }
 
 function ExistingDocumentEditor({
@@ -617,11 +654,7 @@ function ExistingDocumentEditor({
   const updateDraft = useCallback(
     (draft: DocumentDraft) => {
       draftRef.current = draft
-      saveDocumentDraft(
-        detail.document.id,
-        savedRevisionRef.current,
-        draft
-      )
+      saveDocumentDraft(detail.document.id, savedRevisionRef.current, draft)
       setTitle(draft.title)
       setSourceLanguage(draft.sourceLanguage)
       setContent(draft.content)
@@ -630,14 +663,18 @@ function ExistingDocumentEditor({
   )
   const saveCurrentRevision = useCallback(
     (draft: DocumentDraft) =>
-      request<DocumentDetail>(`/api/v1/documents/${detail.document.id}`, token, {
-        method: "PUT",
-        body: JSON.stringify({
-          title: draft.title.trim(),
-          source_language: draft.sourceLanguage.trim(),
-          content: draft.content,
-        }),
-      }),
+      request<DocumentDetail>(
+        `/api/v1/documents/${detail.document.id}`,
+        token,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            title: draft.title.trim(),
+            source_language: draft.sourceLanguage.trim(),
+            content: draft.content,
+          }),
+        }
+      ),
     [detail.document.id, token]
   )
   const markSaved = useCallback(
@@ -719,21 +756,18 @@ function ExistingDocumentEditor({
     publishMutationRef.current = publish.mutate
     publishPendingRef.current = publish.isPending
   }, [publish.isPending, publish.mutate])
-  const saveIfNeeded = useCallback(
-    (notify = false) => {
-      const draft = draftRef.current
-      if (
-        !draft.title.trim() ||
-        savePendingRef.current ||
-        publishPendingRef.current ||
-        draftsMatch(draft, savedDraftRef.current)
-      )
-        return
-      savePendingRef.current = true
-      saveMutationRef.current({ draft, notify })
-    },
-    []
-  )
+  const saveIfNeeded = useCallback((notify = false) => {
+    const draft = draftRef.current
+    if (
+      !draft.title.trim() ||
+      savePendingRef.current ||
+      publishPendingRef.current ||
+      draftsMatch(draft, savedDraftRef.current)
+    )
+      return
+    savePendingRef.current = true
+    saveMutationRef.current({ draft, notify })
+  }, [])
   const publishCurrentRevision = useCallback(() => {
     if (savePendingRef.current || publishPendingRef.current) return
     publishPendingRef.current = true
@@ -758,7 +792,8 @@ function ExistingDocumentEditor({
       if (document.visibilityState === "hidden") saveIfNeeded()
     }
     document.addEventListener("visibilitychange", saveWhenHidden)
-    return () => document.removeEventListener("visibilitychange", saveWhenHidden)
+    return () =>
+      document.removeEventListener("visibilitychange", saveWhenHidden)
   }, [saveIfNeeded])
   useEffect(() => {
     if (
@@ -887,7 +922,9 @@ function ExistingDocumentEditor({
       <aside className="min-w-0 xl:pt-14">
         <EditorialMetadata
           metadata={publishedMetadata(detail.document.metadata)}
-          pending={isPublished && !hasEditorialMetadata(detail.document.metadata)}
+          pending={
+            isPublished && !hasEditorialMetadata(detail.document.metadata)
+          }
           variant="private"
         />
         <AiPanel
@@ -1234,6 +1271,7 @@ function publishedMetadata(value: Record<string, unknown>): PublishedMetadata {
     inferred_lang: strings("inferred_lang"),
     key_points: textList("key_points"),
     audience: strings("audience"),
+    experience_summary: strings("experience_summary"),
   }
 }
 
@@ -1241,11 +1279,12 @@ function hasEditorialMetadata(value: Record<string, unknown>) {
   const metadata = publishedMetadata(value)
   return Boolean(
     metadata.description ||
-      metadata.summary ||
-      metadata.short_summary ||
-      metadata.tags.length ||
-      metadata.key_points.length ||
-      metadata.audience
+    metadata.summary ||
+    metadata.short_summary ||
+    metadata.tags.length ||
+    metadata.key_points.length ||
+    metadata.audience ||
+    metadata.experience_summary
   )
 }
 
@@ -1261,16 +1300,19 @@ function EditorialMetadata({
   const { t } = useI18n()
   const hasMetadata = Boolean(
     metadata.description ||
-      metadata.summary ||
-      metadata.short_summary ||
-      metadata.tags.length ||
-      metadata.key_points.length ||
-      metadata.audience
+    metadata.summary ||
+    metadata.short_summary ||
+    metadata.tags.length ||
+    metadata.key_points.length ||
+    metadata.audience
   )
   if (!hasMetadata)
     return pending ? (
       <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-        <LoaderCircleIcon className="size-3.5 animate-spin" aria-hidden="true" />
+        <LoaderCircleIcon
+          className="size-3.5 animate-spin"
+          aria-hidden="true"
+        />
         {t("metadataPreparing")}
       </p>
     ) : null
@@ -1282,7 +1324,10 @@ function EditorialMetadata({
           {metadata.short_summary || metadata.description}
         </p>
         {metadata.tags.length ? (
-          <div className="flex flex-wrap gap-1.5" aria-label={t("metadataTags")}>
+          <div
+            className="flex flex-wrap gap-1.5"
+            aria-label={t("metadataTags")}
+          >
             {metadata.tags.map((tag) => (
               <Badge key={tag} variant="secondary" className="font-normal">
                 {tag}
@@ -1307,7 +1352,10 @@ function EditorialMetadata({
         </p>
       ) : null}
       {metadata.tags.length ? (
-        <div className="mt-4 flex flex-wrap gap-1.5" aria-label={t("metadataTags")}>
+        <div
+          className="mt-4 flex flex-wrap gap-1.5"
+          aria-label={t("metadataTags")}
+        >
           {metadata.tags.map((tag) => (
             <Badge key={tag} variant="secondary" className="font-normal">
               {tag}
@@ -1327,7 +1375,9 @@ function EditorialMetadata({
       ) : null}
       {metadata.audience ? (
         <p className="mt-5 text-sm leading-6 text-muted-foreground">
-          <span className="font-medium text-foreground">{t("metadataAudience")}: </span>
+          <span className="font-medium text-foreground">
+            {t("metadataAudience")}:{" "}
+          </span>
           {metadata.audience}
         </p>
       ) : null}
@@ -1427,6 +1477,7 @@ function PublicDocumentRow({
   date: string
   onOpen: () => void
 }) {
+  const navigate = useNavigate()
   const { t } = useI18n()
   return (
     <article className="group flex items-center gap-4 py-5">
@@ -1443,8 +1494,16 @@ function PublicDocumentRow({
             </span>
           </span>
         </Button>
-        <div className="mt-2">
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <LinkitUserInfo userId={document.owner_id} compact />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate(`/u/${document.owner_id}`)}
+          >
+            <UserRoundIcon data-icon="inline-start" />
+            {t("viewAuthorPage")}
+          </Button>
         </div>
         <EditorialMetadata
           metadata={document.metadata}
@@ -1473,7 +1532,8 @@ function PublicDocumentPage() {
       ),
     enabled: Boolean(documentId),
     refetchInterval: (query) =>
-      query.state.data?.is_translation_fallback || query.state.data?.metadata_status
+      query.state.data?.is_translation_fallback ||
+      query.state.data?.metadata_status
         ? 2_000
         : false,
   })
@@ -1520,6 +1580,14 @@ function PublicDocumentPage() {
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <LinkitUserInfo userId={document.data.owner_id} compact />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate(`/u/${document.data.owner_id}`)}
+            >
+              <UserRoundIcon data-icon="inline-start" />
+              {t("viewAuthorPage")}
+            </Button>
             <Badge variant="outline">{document.data.language}</Badge>
             {me.data?.user_id === document.data.owner_id ? (
               <Button
@@ -1546,7 +1614,8 @@ function PublicDocumentPage() {
         ) : null}
         <article className="mt-10 max-w-[72ch]">
           <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeKatex]}
             components={markdownComponents}
           >
             {document.data.content}
@@ -1555,6 +1624,274 @@ function PublicDocumentPage() {
       </div>
     </main>
   )
+}
+
+function PublicUserPage() {
+  const { ownerId = "" } = useParams()
+  const navigate = useNavigate()
+  const { locale, t } = useI18n()
+  const { isReady, isAuthenticated, session } = useAuthMini()
+  const profile = useQuery({
+    queryKey: ["public-user-profile", ownerId, locale],
+    queryFn: () =>
+      request<PublicUserProfile>(
+        `/api/public/users/${encodeURIComponent(ownerId)}/profile?language=${encodeURIComponent(locale)}`
+      ),
+    enabled: Boolean(ownerId),
+    refetchInterval: (query) => {
+      const document = query.state.data?.profile
+      return document?.is_translation_fallback || document?.metadata_status
+        ? 2_000
+        : false
+    },
+  })
+  const me = useQuery({
+    queryKey: ["me", session?.accessToken],
+    queryFn: () => request<Me>("/api/v1/me", session?.accessToken ?? undefined),
+    enabled: isReady && isAuthenticated && Boolean(session?.accessToken),
+  })
+  const profileDocument = useMutation({
+    mutationFn: () =>
+      request<DocumentDetail>(
+        "/api/v1/profile-document",
+        session?.accessToken ?? undefined,
+        {
+          method: "POST",
+        }
+      ),
+    onSuccess: (detail) => navigate(`/documents/${detail.document.id}`),
+    onError: showError,
+  })
+
+  if (profile.isPending) return <LoadingPage />
+  if (profile.error || !profile.data)
+    return (
+      <main className="min-h-svh">
+        <PublicHeader onStartWriting={() => navigate("/documents")} />
+        <PageError
+          error={profile.error ?? new Error(t("profileNotFound"))}
+          action={
+            <Button variant="outline" onClick={() => navigate("/square")}>
+              <ArrowLeftIcon data-icon="inline-start" />
+              {t("backToSquare")}
+            </Button>
+          }
+        />
+      </main>
+    )
+
+  const document = profile.data.profile
+  const isOwner = me.data?.user_id === profile.data.owner_id
+  return (
+    <main className="min-h-svh">
+      <PublicHeader onStartWriting={() => navigate("/documents")} />
+      <div className="mx-auto w-full max-w-6xl p-6 md:py-14">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/square")}>
+          <ArrowLeftIcon data-icon="inline-start" />
+          {t("backToSquare")}
+        </Button>
+        <header className="mt-10 flex flex-wrap items-start justify-between gap-5 border-b pb-10">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {t("personalPage")}
+            </h1>
+            <div className="mt-3">
+              <LinkitUserInfo userId={profile.data.owner_id} />
+            </div>
+          </div>
+          {isOwner ? (
+            <Button
+              variant="outline"
+              disabled={profileDocument.isPending}
+              onClick={() => profileDocument.mutate()}
+            >
+              {profileDocument.isPending ? (
+                <LoaderCircleIcon
+                  className="animate-spin"
+                  data-icon="inline-start"
+                />
+              ) : (
+                <PencilIcon data-icon="inline-start" />
+              )}
+              {t("editPersonalPage")}
+            </Button>
+          ) : null}
+        </header>
+        <section className="py-10" aria-labelledby="profile-activity-title">
+          <div className="flex flex-wrap items-baseline justify-between gap-3">
+            <div>
+              <h2
+                id="profile-activity-title"
+                className="text-xl font-semibold tracking-tight"
+              >
+                {t("profileActivityTitle")}
+              </h2>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                {t("profileActivityDescription")}
+              </p>
+            </div>
+            <span className="text-sm text-muted-foreground">
+              {t("profilePublishedCount").replace(
+                "{count}",
+                String(profile.data.published_article_dates.length)
+              )}
+            </span>
+          </div>
+          <PublicationHeatmap dates={profile.data.published_article_dates} />
+        </section>
+        {document ? (
+          <div className="grid gap-10 border-t pt-10 xl:grid-cols-[minmax(0,15rem)_minmax(0,1fr)] xl:gap-14">
+            <aside aria-labelledby="experience-summary-title">
+              <h2
+                id="experience-summary-title"
+                className="text-base font-semibold tracking-tight"
+              >
+                {t("experienceSummary")}
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                {t("experienceSummaryDescription")}
+              </p>
+              {document.metadata.experience_summary ? (
+                <p className="mt-5 text-sm leading-7 text-foreground/90">
+                  {document.metadata.experience_summary}
+                </p>
+              ) : document.metadata_status ? (
+                <Skeleton className="mt-5 h-24 w-full" />
+              ) : (
+                <p className="mt-5 text-sm leading-7 text-muted-foreground">
+                  {t("experienceSummaryEmpty")}
+                </p>
+              )}
+            </aside>
+            <section
+              aria-labelledby="profile-article-title"
+              className="min-w-0"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">
+                    {t("profileArticle")}
+                  </p>
+                  <h2
+                    id="profile-article-title"
+                    className="mt-2 text-3xl font-semibold tracking-tight text-balance"
+                  >
+                    {document.title}
+                  </h2>
+                </div>
+                <Badge variant="outline">{document.language}</Badge>
+              </div>
+              <p className="mt-3 text-sm text-muted-foreground">
+                {t("publishedOn").replace(
+                  "{date}",
+                  formatDate(document.published_at, locale)
+                )}
+              </p>
+              {document.is_translation_fallback ? (
+                <Alert className="mt-6">
+                  <LanguagesIcon data-icon="inline-start" />
+                  <AlertTitle>{t("translationInProgressTitle")}</AlertTitle>
+                  <AlertDescription>
+                    {t("translationInProgress")}
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+              <article className="mt-10 max-w-[72ch]">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[rehypeKatex]}
+                  components={markdownComponents}
+                >
+                  {document.content}
+                </ReactMarkdown>
+              </article>
+            </section>
+          </div>
+        ) : (
+          <Empty className="min-h-72 border-t">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <UserRoundIcon />
+              </EmptyMedia>
+              <EmptyTitle>{t("profileArticleUnavailableTitle")}</EmptyTitle>
+              <EmptyDescription>
+                {t("profileArticleUnavailableDescription")}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+      </div>
+    </main>
+  )
+}
+
+function PublicationHeatmap({ dates }: { dates: number[] }) {
+  const { locale, t } = useI18n()
+  const today = startOfDay(new Date())
+  const firstDay = new Date(today)
+  firstDay.setDate(today.getDate() - 363)
+  const counts = new Map<string, number>()
+  for (const timestamp of dates) {
+    const key = calendarDayKey(new Date(timestamp * 1_000))
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  const days = Array.from({ length: 364 }, (_, index) => {
+    const day = new Date(firstDay)
+    day.setDate(firstDay.getDate() + index)
+    return day
+  })
+
+  return (
+    <div className="mt-5 overflow-x-auto pb-1">
+      <div
+        className="grid w-max grid-flow-col grid-rows-7 gap-1"
+        role="img"
+        aria-label={t("profileActivityTitle")}
+      >
+        {days.map((day) => {
+          const count = counts.get(calendarDayKey(day)) ?? 0
+          const label = t("profileActivityDay")
+            .replace("{date}", formatDate(day.getTime() / 1_000, locale))
+            .replace("{count}", String(count))
+          return (
+            <span
+              key={calendarDayKey(day)}
+              title={label}
+              aria-label={label}
+              className={publicationActivityClass(count)}
+            />
+          )
+        })}
+      </div>
+      <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span>{t("profileActivityLess")}</span>
+        {[0, 1, 2, 3].map((level) => (
+          <span key={level} className={publicationActivityClass(level)} />
+        ))}
+        <span>{t("profileActivityMore")}</span>
+      </div>
+    </div>
+  )
+}
+
+function startOfDay(value: Date): Date {
+  const date = new Date(value)
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+function calendarDayKey(value: Date): string {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, "0")
+  const day = String(value.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function publicationActivityClass(count: number): string {
+  if (count === 0) return "size-3 rounded-sm bg-muted"
+  if (count === 1) return "size-3 rounded-sm bg-primary/25"
+  if (count === 2) return "size-3 rounded-sm bg-primary/55"
+  return "size-3 rounded-sm bg-primary"
 }
 
 function SetupPage({ token, onDone }: { token: string; onDone: () => void }) {
@@ -1603,7 +1940,9 @@ function SystemResourcesPage({ token }: { token: string }) {
 
   if (resources.isPending) return <SystemResourcesSkeleton />
   if (resources.error || !resources.data)
-    return <PageError error={resources.error ?? new Error(t("requestFailed"))} />
+    return (
+      <PageError error={resources.error ?? new Error(t("requestFailed"))} />
+    )
 
   const data = resources.data
   const metrics: Array<{
@@ -1665,7 +2004,7 @@ function SystemResourcesPage({ token }: { token: string }) {
           {t("systemResourcesDescription")}
         </p>
         <p className="mt-3 text-xs text-muted-foreground">
-          {t("systemResourcesRefreshes").replace("{seconds}", "5")} · {" "}
+          {t("systemResourcesRefreshes").replace("{seconds}", "5")} ·{" "}
           {t("systemResourcesSampledAt").replace(
             "{date}",
             formatDateTime(data.sampled_at, locale)

@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "katex/dist/katex.min.css";
 @import "linkit-react-components/styles.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -87,6 +88,13 @@
 
 #root {
     isolation: isolate;
+}
+
+.katex-display {
+  margin-block: 1.5rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.25rem;
 }
 
 .markdown-editor {
