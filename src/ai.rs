@@ -316,15 +316,11 @@ fn normalize_profile_summary_value(value: &mut Value, published_articles: &[Publ
             }
         }
     }
-    if let Some(items) = object
-        .get_mut("schwartz_values")
-        .and_then(Value::as_array_mut)
-    {
-        for item in items {
-            if let Some(item) = item.as_object_mut() {
-                normalize_evidence(item, published_articles);
-            }
-        }
+    if let Some(values) = object.remove("schwartz_values") {
+        object.insert(
+            "schwartz_values".to_owned(),
+            normalize_schwartz_values(values, published_articles),
+        );
     }
     if let Some(items) = object
         .get_mut("daily_timeline")
@@ -379,6 +375,16 @@ fn normalize_evidence(
         {
             item.insert("explanation".to_owned(), observation);
         }
+        if !item.contains_key("explanation")
+            && let Some(reason) = item.remove("reason")
+        {
+            item.insert("explanation".to_owned(), reason);
+        }
+        if !item.contains_key("explanation")
+            && let Some(quote) = item.get("quote").cloned()
+        {
+            item.insert("explanation".to_owned(), quote);
+        }
         if !item.contains_key("article_title") {
             let title = item
                 .get("article_url")
@@ -389,6 +395,38 @@ fn normalize_evidence(
                 .unwrap_or_else(|| "Source article".to_owned());
             item.insert("article_title".to_owned(), Value::String(title));
         }
+        if !item.contains_key("explanation") {
+            item.insert(
+                "explanation".to_owned(),
+                Value::String("Source article evidence.".to_owned()),
+            );
+        }
+    }
+}
+
+fn normalize_schwartz_values(value: Value, published_articles: &[PublishedArticle]) -> Value {
+    match value {
+        Value::Array(mut items) => {
+            for item in &mut items {
+                if let Some(item) = item.as_object_mut() {
+                    normalize_evidence(item, published_articles);
+                }
+            }
+            Value::Array(items)
+        }
+        Value::Object(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|(key, value)| {
+                    let mut item = value.as_object().cloned().unwrap_or_default();
+                    item.entry("key".to_owned())
+                        .or_insert_with(|| Value::String(key));
+                    normalize_evidence(&mut item, published_articles);
+                    Value::Object(item)
+                })
+                .collect(),
+        ),
+        value => value,
     }
 }
 
@@ -1315,6 +1353,50 @@ mod tests {
         assert_eq!(
             analysis.dimensions[0].evidence[0].explanation,
             "Observed pattern."
+        );
+    }
+
+    #[test]
+    fn normalizes_schwartz_objects_and_sparse_timeline_evidence() {
+        let output = json!({
+            "schwartz_values": {
+                "self_direction": {"score": 98, "rank": 1, "evidence": [{"article_url": "#/p/article-1", "reason": "Independent exploration."}]},
+                "stimulation": {"score": 80, "rank": 2, "evidence": []},
+                "hedonism": {"score": 70, "rank": 3, "evidence": []},
+                "achievement": {"score": 60, "rank": 4, "evidence": []},
+                "power": {"score": 50, "rank": 5, "evidence": []},
+                "security": {"score": 40, "rank": 6, "evidence": []},
+                "conformity": {"score": 30, "rank": 7, "evidence": []},
+                "tradition": {"score": 20, "rank": 8, "evidence": []},
+                "benevolence": {"score": 10, "rank": 9, "evidence": []},
+                "universalism": {"score": 1, "rank": 10, "evidence": []}
+            }
+        });
+        let articles = [PublishedArticle {
+            id: "article-1".to_owned(),
+            title: "Source article".to_owned(),
+            content: String::new(),
+            inferred_date: String::new(),
+            published_date: String::new(),
+        }];
+        let patch = profile_summary_from_output_with_articles(
+            &output.to_string(),
+            "profile_schwartz",
+            &articles,
+        )
+        .unwrap();
+        let ProfileSummaryPatch::Schwartz(values) = patch else {
+            panic!("expected Schwartz patch");
+        };
+        assert_eq!(values.len(), 10);
+        let self_direction = values
+            .iter()
+            .find(|value| value.key == "self_direction")
+            .unwrap();
+        assert_eq!(self_direction.evidence[0].article_title, "Source article");
+        assert_eq!(
+            self_direction.evidence[0].explanation,
+            "Independent exploration."
         );
     }
 
