@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::{
     db::{
         AiCredentials, AiRequest, DailyTimelineEntry, Database, DocumentDetail, MbtiAnalysis,
-        PublishedArticle, PublishedMetadata, SchwartzValue, SummaryEvidence,
+        PROFILE_SUMMARY_TASKS, PublishedArticle, PublishedMetadata, SchwartzValue, SummaryEvidence,
     },
     language::normalize_language_tag,
 };
@@ -108,6 +108,44 @@ struct MetadataOutput {
     daily_timeline: Vec<DailyTimelineEntry>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ProfileMarkdownOutput {
+    #[serde(default)]
+    experience_summary: String,
+    #[serde(default)]
+    personality_analysis: String,
+    #[serde(default)]
+    unconscious_motivations: String,
+    #[serde(default)]
+    philosophical_references: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileMbtiOutput {
+    mbti_analysis: MbtiAnalysis,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileSchwartzOutput {
+    schwartz_values: Vec<SchwartzValue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileTimelineOutput {
+    #[serde(default)]
+    daily_timeline: Vec<DailyTimelineEntry>,
+}
+
+enum ProfileSummaryPatch {
+    Experience(String),
+    Personality(String),
+    Mbti(MbtiAnalysis),
+    Schwartz(Vec<SchwartzValue>),
+    Motivations(String),
+    Philosophy(String),
+    Timeline(Vec<DailyTimelineEntry>),
+}
+
 pub async fn run(
     credentials: &AiCredentials,
     document: &DocumentDetail,
@@ -155,11 +193,141 @@ pub async fn extract_document_metadata(
     metadata_from_output(&output, &document.document.kind)
 }
 
+async fn extract_profile_summary(
+    credentials: &AiCredentials,
+    document: &DocumentDetail,
+    published_articles: &[PublishedArticle],
+    task: &str,
+) -> Result<ProfileSummaryPatch, AiError> {
+    let instructions = profile_summary_instructions(task).ok_or(AiError::Response)?;
+    let input = metadata_input(document, published_articles);
+    let output = request_output(credentials, &instructions, &input).await?;
+    profile_summary_from_output(&output, task)
+}
+
+fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummaryPatch, AiError> {
+    match task {
+        "profile_experience"
+        | "profile_personality"
+        | "profile_motivations"
+        | "profile_philosophy" => {
+            let output: ProfileMarkdownOutput =
+                serde_json::from_str(output).map_err(|_| AiError::Response)?;
+            let content = match task {
+                "profile_experience" => output.experience_summary,
+                "profile_personality" => output.personality_analysis,
+                "profile_motivations" => output.unconscious_motivations,
+                _ => output.philosophical_references,
+            };
+            Ok(match task {
+                "profile_experience" => ProfileSummaryPatch::Experience(content),
+                "profile_personality" => ProfileSummaryPatch::Personality(content),
+                "profile_motivations" => ProfileSummaryPatch::Motivations(content),
+                _ => ProfileSummaryPatch::Philosophy(content),
+            })
+        }
+        "profile_mbti" => {
+            let output: ProfileMbtiOutput =
+                serde_json::from_str(output).map_err(|_| AiError::Response)?;
+            if !valid_mbti_type(&output.mbti_analysis) || output.mbti_analysis.dimensions.len() != 4
+            {
+                return Err(AiError::Response);
+            }
+            const AXES: [&str; 4] = ["I/E", "N/S", "T/F", "J/P"];
+            if !output
+                .mbti_analysis
+                .dimensions
+                .iter()
+                .zip(AXES)
+                .all(|(dimension, axis)| valid_mbti_dimension(dimension, axis))
+            {
+                return Err(AiError::Response);
+            }
+            Ok(ProfileSummaryPatch::Mbti(output.mbti_analysis))
+        }
+        "profile_schwartz" => {
+            let output: ProfileSchwartzOutput =
+                serde_json::from_str(output).map_err(|_| AiError::Response)?;
+            const VALUES: [&str; 10] = [
+                "self_direction",
+                "stimulation",
+                "hedonism",
+                "achievement",
+                "power",
+                "security",
+                "conformity",
+                "tradition",
+                "benevolence",
+                "universalism",
+            ];
+            if !valid_schwartz_values(&output.schwartz_values, &VALUES) {
+                return Err(AiError::Response);
+            }
+            Ok(ProfileSummaryPatch::Schwartz(output.schwartz_values))
+        }
+        "profile_timeline" => {
+            let output: ProfileTimelineOutput =
+                serde_json::from_str(output).map_err(|_| AiError::Response)?;
+            if !valid_daily_timeline(&output.daily_timeline) {
+                return Err(AiError::Response);
+            }
+            Ok(ProfileSummaryPatch::Timeline(output.daily_timeline))
+        }
+        _ => Err(AiError::Response),
+    }
+}
+
+fn apply_profile_summary_patch(
+    metadata: &mut PublishedMetadata,
+    patch: ProfileSummaryPatch,
+) -> &'static str {
+    match patch {
+        ProfileSummaryPatch::Experience(content) => {
+            metadata.experience_summary = content;
+            "experience"
+        }
+        ProfileSummaryPatch::Personality(content) => {
+            metadata.personality_analysis = content;
+            "personality"
+        }
+        ProfileSummaryPatch::Mbti(analysis) => {
+            metadata.mbti_analysis = analysis;
+            "MBTI"
+        }
+        ProfileSummaryPatch::Schwartz(values) => {
+            metadata.schwartz_values = values;
+            "Schwartz values"
+        }
+        ProfileSummaryPatch::Motivations(content) => {
+            metadata.unconscious_motivations = content;
+            "unconscious motivations"
+        }
+        ProfileSummaryPatch::Philosophy(content) => {
+            metadata.philosophical_references = content;
+            "philosophical references"
+        }
+        ProfileSummaryPatch::Timeline(entries) => {
+            metadata.daily_timeline = entries;
+            "daily timeline"
+        }
+    }
+}
+
 pub async fn run_worker(database: Database) {
     if let Err(error) = database.requeue_running_ai_requests() {
         eprintln!("CTX could not recover interrupted AI requests: {error}");
     }
+    if let Err(error) = database.schedule_profile_summary_tasks_if_due() {
+        eprintln!("CTX could not schedule daily profile summaries: {error}");
+    }
+    let mut next_daily_schedule = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
+        if tokio::time::Instant::now() >= next_daily_schedule {
+            if let Err(error) = database.schedule_profile_summary_tasks_if_due() {
+                eprintln!("CTX could not schedule daily profile summaries: {error}");
+            }
+            next_daily_schedule = tokio::time::Instant::now() + Duration::from_secs(60);
+        }
         match database.claim_next_ai_request() {
             Ok(Some(request)) => {
                 let result = process_ai_request(&database, &request).await;
@@ -192,6 +360,49 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "AI is not configured by the root administrator".to_owned())?;
     match request.task.as_str() {
+        task if PROFILE_SUMMARY_TASKS.contains(&task) => {
+            if document.document.kind != "profile" {
+                return Err("profile summary tasks require a profile document".to_owned());
+            }
+            let published_articles = database
+                .published_articles_for_author(&document.document.owner_id)
+                .map_err(|error| error.to_string())?;
+            if document.document.source_language == "und" {
+                return Err("profile metadata is still being extracted".to_owned());
+            }
+            let patch = extract_profile_summary(&credentials, &document, &published_articles, task)
+                .await
+                .map_err(|error| error.to_string())?;
+            let Some(mut metadata) = database
+                .published_source_metadata(
+                    &request.document_id,
+                    &request.source_revision_id,
+                    &document.document.source_language,
+                )
+                .map_err(|error| error.to_string())?
+            else {
+                return Err("profile metadata is still being extracted".to_owned());
+            };
+            let summary_name = apply_profile_summary_patch(&mut metadata, patch);
+            let stored = database
+                .apply_profile_summary(
+                    &request.document_id,
+                    &request.source_revision_id,
+                    &document.document.source_language,
+                    &metadata,
+                )
+                .map_err(|error| error.to_string())?;
+            if !stored {
+                return Ok("Superseded by a newer published revision".to_owned());
+            }
+            database
+                .invalidate_profile_translation_metadata(
+                    &request.document_id,
+                    &request.source_revision_id,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(format!("Updated {summary_name} profile summary"))
+        }
         "metadata" => {
             let published_articles = (document.document.kind == "profile")
                 .then(|| database.published_articles_for_author(&document.document.owner_id))
@@ -225,6 +436,13 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
                     .invalidate_profile_translation_metadata(
                         &request.document_id,
                         &request.source_revision_id,
+                    )
+                    .map_err(|error| error.to_string())?;
+                database
+                    .enqueue_profile_summary_tasks(
+                        &request.document_id,
+                        &request.source_revision_id,
+                        None,
                     )
                     .map_err(|error| error.to_string())?;
             } else {
@@ -295,14 +513,13 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
 
 fn translation_from_output(
     output: &str,
-    document_kind: &str,
+    _document_kind: &str,
 ) -> Result<DocumentTranslation, AiError> {
     let translation: TranslationOutput =
         serde_json::from_str(output).map_err(|_| AiError::Response)?;
     if translation.title.trim().is_empty()
         || translation.content.trim().is_empty()
         || translation.metadata.is_empty()
-        || (document_kind == "profile" && !profile_summaries_are_complete(&translation.metadata))
     {
         return Err(AiError::Response);
     }
@@ -313,7 +530,7 @@ fn translation_from_output(
     })
 }
 
-fn metadata_from_output(output: &str, document_kind: &str) -> Result<DocumentMetadata, AiError> {
+fn metadata_from_output(output: &str, _document_kind: &str) -> Result<DocumentMetadata, AiError> {
     let output: MetadataOutput = serde_json::from_str(output).map_err(|_| AiError::Response)?;
     let inferred_language = output.inferred_lang;
     let inferred_language = normalize_language_tag(&inferred_language)
@@ -336,43 +553,13 @@ fn metadata_from_output(output: &str, document_kind: &str) -> Result<DocumentMet
         philosophical_references: output.philosophical_references,
         daily_timeline: output.daily_timeline,
     };
-    if metadata.is_empty()
-        || (document_kind == "profile" && !profile_summaries_are_complete(&metadata))
-    {
+    if metadata.is_empty() {
         return Err(AiError::Response);
     }
     Ok(DocumentMetadata {
         metadata,
         inferred_language,
     })
-}
-
-fn profile_summaries_are_complete(metadata: &PublishedMetadata) -> bool {
-    const MBTI_AXES: [&str; 4] = ["I/E", "N/S", "T/F", "J/P"];
-    const SCHWARTZ_VALUES: [&str; 10] = [
-        "self_direction",
-        "stimulation",
-        "hedonism",
-        "achievement",
-        "power",
-        "security",
-        "conformity",
-        "tradition",
-        "benevolence",
-        "universalism",
-    ];
-
-    valid_mbti_type(&metadata.mbti_analysis)
-        && metadata.mbti_analysis.dimensions.len() == MBTI_AXES.len()
-        && metadata
-            .mbti_analysis
-            .dimensions
-            .iter()
-            .zip(MBTI_AXES)
-            .all(|(dimension, axis)| valid_mbti_dimension(dimension, axis))
-        && metadata.schwartz_values.len() == SCHWARTZ_VALUES.len()
-        && valid_schwartz_values(&metadata.schwartz_values, &SCHWARTZ_VALUES)
-        && valid_daily_timeline(&metadata.daily_timeline)
 }
 
 fn valid_mbti_type(analysis: &MbtiAnalysis) -> bool {
@@ -432,12 +619,42 @@ fn valid_confidence(confidence: &str) -> bool {
 
 fn metadata_instructions(document_kind: &str) -> String {
     let profile_instructions = (document_kind == "profile").then_some(
-        "This is a personal profile document. The input includes the complete set of ordinary articles published by this author. Build experience_summary from all of those sources and the profile document, not from the profile document alone. experience_summary must be concise GitHub Flavored Markdown in a resume format. Use only sections supported by explicit facts, such as `### Overview`, `### Experience`, `### Projects`, and `### Milestones`. Use factual bullet points and dates only when stated. Do not use first person, emotional language, subjective evaluation, or speculation. Do not invent employers, roles, education, skills, chronology, or links. If no experience facts are stated anywhere, return an empty string. Also build personality_analysis from the same complete source set. personality_analysis must be concise GitHub Flavored Markdown for a public personal page. Start with a blockquote stating that it is an AI reading of published writing, not a clinical or diagnostic assessment. Then use only evidence-supported sections such as `### Writing patterns`, `### Values and priorities`, `### Decision and work style`, and `### Expression and collaboration`. For every substantive point, cite one or more of the supplied source article links. Describe observable patterns in the writing, not private facts about the author. Do not diagnose or assess mental health; do not infer conditions, trauma, psychological defence mechanisms, cognitive functions, or risks. Do not make claims about relationships or emotions unless the text explicitly states them. If the articles do not contain enough explicit material for a useful, evidence-supported analysis, return an empty string. Also return a complete structured MBTI analysis in mbti_analysis. It must contain type_code (one of the sixteen four-letter MBTI codes or `undetermined`), confidence (`high`, `medium`, `low`, or `undetermined`), and exactly four dimensions in this order: I/E, N/S, T/F, J/P. Each dimension must include its axis, one preference from that axis or `undetermined`, confidence, and zero or more evidence objects. Also return exactly ten schwartz_values, with the keys self_direction, stimulation, hedonism, achievement, power, security, conformity, tradition, benevolence, and universalism. Each value must include an integer score from 0 to 100, a unique integer rank from 1 (strongest) to 10, and zero or more evidence objects. Every evidence object must have article_title, article_url, and explanation; article_url must exactly use one of the supplied `#/p/...` links. MBTI is a tentative textual classification, never a medical or scientific diagnosis. Build unconscious_motivations as concise GitHub Flavored Markdown that offers explicitly tentative interpretations of possible motivations in the writing, with source links for each conclusion. Do not infer trauma, mental-health conditions, or private facts. Build philosophical_references as concise GitHub Flavored Markdown that identifies the author's expressed propositions, relevant philosophical references or traditions, and evidence links; do not attribute an author to a philosopher or school without textual support. Build daily_timeline as a list of zero or more entries. Each entry must have an explicit YYYY-MM-DD date, one concise sentence saying what the author did and what result was recorded that day, and zero or more evidence objects. Use only dates stated in the Markdown, the supplied document date, or the supplied public publication date; merge multiple article events from the same day and never invent dates, events, or results.",
+        "This is a personal profile document. The input includes the complete set of ordinary articles published by this author. The metadata task only extracts the common editorial fields (description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, and audience). Return empty values for all profile summary fields: experience_summary, personality_analysis, mbti_analysis, schwartz_values, unconscious_motivations, philosophical_references, and daily_timeline. Those seven summaries are generated by independent scheduled or manually triggered tasks, so do not combine them here. Do not invent facts, dates, sources, or links.",
     );
     format!(
-        "You are CTX's editorial metadata assistant. Extract structured metadata from Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences for an article list or RSS description), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), audience (a short description), experience_summary (an empty string unless this is a personal profile document), personality_analysis (an empty string unless this is a personal profile document), mbti_analysis (an empty object unless this is a personal profile document), schwartz_values (an empty array unless this is a personal profile document), unconscious_motivations (an empty string unless this is a personal profile document), philosophical_references (an empty string unless this is a personal profile document), and daily_timeline (an empty array unless this is a personal profile document). Preserve the author's title; do not generate or change it. Summary is part of this metadata extraction; do not create a separate summary artifact. {}",
+        "You are CTX's editorial metadata assistant. Extract structured metadata from Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences for an article list or RSS description), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), audience (a short description), experience_summary, personality_analysis, mbti_analysis, schwartz_values, unconscious_motivations, philosophical_references, and daily_timeline. For this metadata task, return empty values for all seven profile summary fields; independent profile summary tasks populate them later. Preserve the author's title; do not generate or change it. Summary is part of this metadata extraction; do not create a separate summary artifact. {}",
         profile_instructions.unwrap_or_default()
     )
+}
+
+fn profile_summary_instructions(task: &str) -> Option<String> {
+    let output_shape = match task {
+        "profile_experience" => {
+            "experience_summary (concise GitHub Flavored Markdown in a factual resume format)"
+        }
+        "profile_personality" => {
+            "personality_analysis (concise GitHub Flavored Markdown; begin with a non-clinical AI-reading disclaimer and describe only observable writing patterns)"
+        }
+        "profile_mbti" => {
+            "mbti_analysis (type_code, confidence, and exactly four dimensions in I/E, N/S, T/F, J/P order; every dimension includes preference, confidence, and evidence)"
+        }
+        "profile_schwartz" => {
+            "schwartz_values (exactly ten values with keys self_direction, stimulation, hedonism, achievement, power, security, conformity, tradition, benevolence, universalism; each has score 0-100, unique rank 1-10, and evidence)"
+        }
+        "profile_motivations" => {
+            "unconscious_motivations (concise GitHub Flavored Markdown with explicitly tentative, source-grounded interpretations; never infer trauma or mental-health conditions)"
+        }
+        "profile_philosophy" => {
+            "philosophical_references (concise GitHub Flavored Markdown identifying expressed propositions and supported philosophical references with evidence links)"
+        }
+        "profile_timeline" => {
+            "daily_timeline (zero or more entries; each has an explicit YYYY-MM-DD date, one sentence describing the day's action and result, and evidence; dates need not be ordered)"
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "You are CTX's independent personal-profile summary assistant. Read the profile document and the complete set of the author's published ordinary articles supplied in the input. Generate only {output_shape}. Use only explicit facts from those sources; every evidence article_url must exactly match a supplied #/p/... link. Return JSON only with exactly the requested field. An empty Markdown string or empty timeline is valid when the sources do not support a conclusion."
+    ))
 }
 
 fn metadata_input(document: &DocumentDetail, published_articles: &[PublishedArticle]) -> String {
@@ -534,7 +751,7 @@ fn output_text_from_sse(sse: &str) -> Option<String> {
 
 fn system_prompt(task: &AiTask) -> String {
     match task {
-        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, audience, experience_summary, personality_analysis, mbti_analysis, schwartz_values, unconscious_motivations, philosophical_references, and daily_timeline. Preserve the author's factual claims and do not invent sources. For a profile document, its structured summaries must remain source-grounded and non-clinical; keep evidence links, ranks, scores, and dates factual. Return empty profile summary fields for other documents.".to_owned(),
+        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, audience, experience_summary, personality_analysis, mbti_analysis, schwartz_values, unconscious_motivations, philosophical_references, and daily_timeline. Preserve the author's factual claims and do not invent sources. Profile structured summaries are generated by independent scheduled tasks; return empty profile summary fields here.".to_owned(),
         AiTask::DetectLanguage => "You are CTX's language detector. Read the document title and Markdown, then return only its original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES. Do not add explanation, punctuation, or Markdown. If the language cannot be determined, return und.".to_owned(),
         AiTask::Polish => "You are CTX's Markdown editing assistant. Polish the complete document for clarity, flow, precision, and concise professional tone while preserving the author's facts, intent, and voice. Return only the revised GitHub Flavored Markdown. Preserve every Markdown structure and meaning: headings, links and URLs, inline code, code blocks, Mermaid syntax, images, task lists, tables, HTML, frontmatter, and formulas. Do not add sources, claims, or editorial commentary.".to_owned(),
     }
@@ -545,8 +762,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AiTask, metadata_from_output, metadata_instructions, output_text_from_sse, request_body,
-        system_prompt, translation_from_output, translation_instructions,
+        AiTask, metadata_from_output, metadata_instructions, output_text_from_sse,
+        profile_summary_from_output, profile_summary_instructions, request_body, system_prompt,
+        translation_from_output, translation_instructions,
     };
 
     fn complete_profile_metadata() -> Value {
@@ -720,19 +938,17 @@ mod tests {
     fn profile_metadata_requires_all_article_summaries() {
         let instructions = metadata_instructions("profile");
         assert!(instructions.contains("complete set of ordinary articles"));
-        assert!(instructions.contains("resume format"));
-        assert!(instructions.contains("GitHub Flavored Markdown"));
+        assert!(instructions.contains("common editorial fields"));
         assert!(instructions.contains("personality_analysis"));
         assert!(instructions.contains("mbti_analysis"));
         assert!(instructions.contains("schwartz_values"));
         assert!(instructions.contains("daily_timeline"));
-        assert!(instructions.contains("not a clinical or diagnostic assessment"));
-        assert!(instructions.contains("supplied source article links"));
-        assert!(metadata_instructions("article").contains("empty string unless"));
+        assert!(instructions.contains("independent scheduled or manually triggered tasks"));
+        assert!(metadata_instructions("article").contains("independent profile summary tasks"));
     }
 
     #[test]
-    fn requires_complete_structured_profile_summaries() {
+    fn profile_metadata_can_be_completed_by_independent_tasks() {
         let output = complete_profile_metadata();
         let metadata = metadata_from_output(&output.to_string(), "profile").unwrap();
         assert_eq!(metadata.metadata.mbti_analysis.type_code, "INTJ");
@@ -742,7 +958,31 @@ mod tests {
 
         let mut malformed = complete_profile_metadata();
         malformed["schwartz_values"][0]["rank"] = json!(0);
-        assert!(metadata_from_output(&malformed.to_string(), "profile").is_err());
+        assert!(metadata_from_output(&malformed.to_string(), "profile").is_ok());
+    }
+
+    #[test]
+    fn parses_independent_profile_summary_tasks() {
+        let markdown = profile_summary_from_output(
+            "{\"experience_summary\":\"### Experience\\n\\n- Built CTX.\"}",
+            "profile_experience",
+        )
+        .unwrap();
+        assert!(matches!(
+            markdown,
+            super::ProfileSummaryPatch::Experience(_)
+        ));
+        assert!(
+            profile_summary_instructions("profile_mbti")
+                .unwrap()
+                .contains("mbti_analysis")
+        );
+        assert!(
+            profile_summary_instructions("profile_timeline")
+                .unwrap()
+                .contains("daily_timeline")
+        );
+        assert!(profile_summary_from_output("{}", "profile_mbti").is_err());
     }
 
     #[test]

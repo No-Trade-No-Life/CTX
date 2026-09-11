@@ -159,7 +159,16 @@ export type AiRequest = {
   document_id: string
   document_title: string
   source_revision_id: string
-  task: "metadata" | "translate"
+  task:
+    | "metadata"
+    | "translate"
+    | "profile_experience"
+    | "profile_personality"
+    | "profile_mbti"
+    | "profile_schwartz"
+    | "profile_motivations"
+    | "profile_philosophy"
+    | "profile_timeline"
   target_language: string
   status: "queued" | "running" | "succeeded" | "failed"
   result_summary: string | null
@@ -167,6 +176,10 @@ export type AiRequest = {
   created_at: number
   started_at: number | null
   completed_at: number | null
+}
+
+export type ProfileSummaryTaskResponse = {
+  tasks: string[]
 }
 
 export type SystemResources = {

@@ -71,6 +71,10 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         )
         .route("/documents/{document_id}/publish", post(publish_document))
         .route(
+            "/documents/{document_id}/profile-summaries",
+            post(trigger_profile_summaries),
+        )
+        .route(
             "/public-documents/{document_id}/comments",
             post(create_public_comment),
         )
@@ -286,6 +290,39 @@ async fn publish_document(
             .database
             .publish_document(&document_id, &document.revision.id)?
             .ok_or_else(ApiError::conflict)?,
+    ))
+}
+
+async fn trigger_profile_summaries(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Path(document_id): Path<String>,
+    Json(input): Json<ProfileSummaryTaskInput>,
+) -> Result<(StatusCode, Json<ProfileSummaryTaskResponse>), ApiError> {
+    let document = require_document_owner(&state.database, &principal, &document_id)?;
+    if document.document.kind != "profile" || document.document.status != "published" {
+        return Err(ApiError::bad_request(
+            "profile summaries require a published profile document",
+        ));
+    }
+    let source_revision_id = document
+        .document
+        .published_revision_id
+        .as_deref()
+        .ok_or_else(|| ApiError::bad_request("profile document has no published revision"))?;
+    let task = input
+        .task
+        .as_deref()
+        .map(profile_summary_task_name)
+        .transpose()?;
+    let tasks = state.database.enqueue_profile_summary_tasks(
+        &document_id,
+        source_revision_id,
+        task.as_deref(),
+    )?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ProfileSummaryTaskResponse { tasks }),
     ))
 }
 
@@ -568,6 +605,16 @@ struct AiTaskInput {
 }
 
 #[derive(Debug, Deserialize)]
+struct ProfileSummaryTaskInput {
+    task: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfileSummaryTaskResponse {
+    tasks: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct PublicDocumentQuery {
     language: Option<String>,
 }
@@ -646,6 +693,21 @@ fn requested_language(value: Option<&str>) -> Result<Option<String>, ApiError> {
                 .ok_or_else(|| ApiError::bad_request("language must be a BCP 47 tag"))
         })
         .transpose()
+}
+
+fn profile_summary_task_name(value: &str) -> Result<String, ApiError> {
+    let task = match value {
+        "all" => "all",
+        "experience" | "profile_experience" => "profile_experience",
+        "personality" | "profile_personality" => "profile_personality",
+        "mbti" | "profile_mbti" => "profile_mbti",
+        "schwartz" | "profile_schwartz" => "profile_schwartz",
+        "motivations" | "profile_motivations" => "profile_motivations",
+        "philosophy" | "profile_philosophy" => "profile_philosophy",
+        "timeline" | "profile_timeline" => "profile_timeline",
+        _ => return Err(ApiError::bad_request("unsupported profile summary task")),
+    };
+    Ok(task.to_owned())
 }
 
 fn validate_document_input(input: &DocumentInput) -> Result<(), ApiError> {

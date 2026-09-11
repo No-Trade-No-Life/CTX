@@ -47,9 +47,15 @@ public square for anyone to read.
   philosophical-reference (`?tab=philosophy`) readings, a date-structured daily
   timeline (`?tab=timeline`), and the published profile article
   (`?tab=article`). The summaries are derived from the author's complete
-  published article set and refresh asynchronously when an article is
-  published. They retain source links, use the language matrix for translated
-  metadata, and keep psychological readings explicitly non-clinical.
+  published article set. Experience, personality, MBTI, Schwartz values,
+  motivations, philosophy, and timeline are independent AI queue tasks: they
+  run asynchronously after a profile or article publication, are scheduled once
+  per day by the worker, and can be manually requeued by the profile owner with
+  `POST /api/v1/documents/{document_id}/profile-summaries` and
+  `{"task":"all"}` (or one task name). Each completed task updates only its
+  own structured field, records an auditable request, and requeues translated
+  profile metadata for every configured language. They retain source links and
+  keep psychological readings explicitly non-clinical.
   Profile documents are served from `/api/public/users/{owner_id}/profile` and
   do not appear in the square.
 - Root-only OpenAI-compatible routing configuration for `https://openai.ntnl.io/v1`.
