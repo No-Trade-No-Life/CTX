@@ -752,7 +752,7 @@ fn profile_summary_instructions(task: &str) -> Option<String> {
             "personality_analysis (concise GitHub Flavored Markdown; begin with a non-clinical AI-reading disclaimer and describe only observable writing patterns)"
         }
         "profile_mbti" => {
-            "mbti_analysis (type_code, confidence, and exactly four dimensions in I/E, N/S, T/F, J/P order; every dimension includes preference, confidence, and evidence)"
+            "mbti_analysis for observable writing-style preferences only (type_code, confidence, and exactly four dimensions in I/E, N/S, T/F, J/P order; every dimension includes preference, confidence, and evidence; this is not a claim about private personality or a diagnosis)"
         }
         "profile_schwartz" => {
             "schwartz_values (exactly ten values with keys self_direction, stimulation, hedonism, achievement, power, security, conformity, tradition, benevolence, universalism; each has score 0-100, unique rank 1-10, and evidence)"
@@ -781,7 +781,7 @@ fn profile_summary_instructions(task: &str) -> Option<String> {
         _ => " Return only the compact JSON object and keep Markdown concise.",
     };
     Some(format!(
-        "You are CTX's independent personal-profile summary assistant. Read the profile document and the complete set of the author's published ordinary articles supplied in the input. Generate only {output_shape}. Use only explicit facts from those sources; every evidence article_url must exactly match a supplied #/p/... link. Return JSON only with exactly the requested field. An empty Markdown string or empty timeline is valid when the sources do not support a conclusion. Do not add a Markdown code fence or commentary.{constraints}"
+        "You are CTX's independent editorial corpus-analysis assistant. Read the profile document and the complete set of the author's published ordinary articles supplied in the input. Generate only {output_shape}. Use only explicit facts from those sources; every evidence article_url must exactly match a supplied #/p/... link. Return JSON only with exactly the requested field. An empty Markdown string or empty timeline is valid when the sources do not support a conclusion. Do not add a Markdown code fence or commentary.{constraints}"
     ))
 }
 
