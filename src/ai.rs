@@ -87,6 +87,8 @@ struct MetadataOutput {
     key_points: Vec<String>,
     #[serde(default)]
     audience: String,
+    #[serde(default)]
+    experience_summary: String,
 }
 
 pub async fn run(
@@ -96,8 +98,8 @@ pub async fn run(
 ) -> Result<AiOutput, AiError> {
     let system = system_prompt(&task);
     let content = format!(
-        "Document title: {}\n\nDocument Markdown:\n{}",
-        document.document.title, document.revision.content
+        "Document kind: {}\nDocument title: {}\n\nDocument Markdown:\n{}",
+        document.document.kind, document.document.title, document.revision.content
     );
     let output = request_output(credentials, &system, &content).await?;
     let proposed_content = matches!(task, AiTask::Polish).then(|| output.clone());
@@ -129,12 +131,16 @@ pub async fn extract_document_metadata(
     credentials: &AiCredentials,
     document: &DocumentDetail,
 ) -> Result<DocumentMetadata, AiError> {
-    let instructions = "You are CTX's editorial metadata assistant. Extract structured metadata from the Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences for an article list or RSS description), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), and audience (a short description). Preserve the author's title; do not generate or change it. Summary is part of this metadata extraction; do not create a separate summary artifact.";
+    let profile_instruction = (document.document.kind == "profile").then_some("This is a personal profile document. Also return experience_summary: one compact, objective, neutral paragraph summarizing only explicitly stated roles, projects, milestones, dates, and areas of work. Do not use first person, emotional language, subjective evaluation, or speculation. If the document has no stated experience facts, return an empty string.");
+    let instructions = format!(
+        "You are CTX's editorial metadata assistant. Extract structured metadata from the Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences for an article list or RSS description), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), audience (a short description), and experience_summary (an empty string unless this is a personal profile document). Preserve the author's title; do not generate or change it. Summary is part of this metadata extraction; do not create a separate summary artifact. {}",
+        profile_instruction.unwrap_or_default()
+    );
     let content = format!(
         "Document title:\n{}\n\nDocument Markdown:\n{}",
         document.document.title, document.revision.content
     );
-    let output = request_output(credentials, instructions, &content).await?;
+    let output = request_output(credentials, &instructions, &content).await?;
     metadata_from_output(&output)
 }
 
@@ -288,6 +294,7 @@ fn metadata_from_output(output: &str) -> Result<DocumentMetadata, AiError> {
         inferred_lang: inferred_language.clone(),
         key_points: output.key_points,
         audience: output.audience,
+        experience_summary: output.experience_summary,
     };
     if metadata.is_empty() {
         return Err(AiError::Response);
@@ -300,7 +307,7 @@ fn metadata_from_output(output: &str) -> Result<DocumentMetadata, AiError> {
 
 fn translation_instructions(source_language: &str, target_language: &str) -> String {
     format!(
-        "You are CTX's Markdown translation assistant. Translate the title, complete GitHub Flavored Markdown document, and editorial metadata from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, task lists, tables, HTML, and frontmatter. For Mermaid fenced code blocks, preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators; translate only reader-facing labels, titles, and subgraph labels. Do not leave Mermaid labels in the source language. Do not change non-text elements or code. Translate description, summary, short_summary, tags, key_points, and audience in metadata; preserve inferred_date and set metadata.inferred_lang to {target_language}. Use fluent, idiomatic language for a reader familiar with the subject. {} Return only a JSON object with string fields title and content and an object field metadata.",
+        "You are CTX's Markdown translation assistant. Translate the title, complete GitHub Flavored Markdown document, and editorial metadata from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, task lists, tables, HTML, and frontmatter. For Mermaid fenced code blocks, preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators; translate only reader-facing labels, titles, and subgraph labels. Do not leave Mermaid labels in the source language. Do not change non-text elements or code. Translate description, summary, short_summary, tags, key_points, audience, and experience_summary in metadata; preserve inferred_date and set metadata.inferred_lang to {target_language}. Use fluent, idiomatic language for a reader familiar with the subject. {} Return only a JSON object with string fields title and content and an object field metadata.",
         japanese_translation_rules(target_language)
     )
 }
@@ -359,7 +366,7 @@ fn output_text_from_sse(sse: &str) -> Option<String> {
 
 fn system_prompt(task: &AiTask) -> String {
     match task {
-        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, and audience. Preserve the author's factual claims and do not invent sources.".to_owned(),
+        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, audience, and experience_summary. Preserve the author's factual claims and do not invent sources. For a profile document, experience_summary must be a compact neutral summary of explicitly stated experience facts only, with no first person, subjective evaluation, emotion, or speculation. Return an empty experience_summary for other documents.".to_owned(),
         AiTask::DetectLanguage => "You are CTX's language detector. Read the document title and Markdown, then return only its original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES. Do not add explanation, punctuation, or Markdown. If the language cannot be determined, return und.".to_owned(),
         AiTask::Polish => "You are CTX's Markdown editing assistant. Polish the complete document for clarity, flow, precision, and concise professional tone while preserving the author's facts, intent, and voice. Return only the revised GitHub Flavored Markdown. Preserve every Markdown structure and meaning: headings, links and URLs, inline code, code blocks, Mermaid syntax, images, task lists, tables, HTML, frontmatter, and formulas. Do not add sources, claims, or editorial commentary.".to_owned(),
     }
@@ -439,6 +446,7 @@ mod tests {
                 .contains("translate only reader-facing labels, titles, and subgraph labels")
         );
         assert!(instructions.contains("Do not leave Mermaid labels in the source language"));
+        assert!(instructions.contains("experience_summary"));
         assert!(instructions.contains("です・ます"));
     }
 
@@ -453,10 +461,14 @@ mod tests {
     #[test]
     fn requires_structured_metadata_with_a_canonical_original_language() {
         let metadata = metadata_from_output(
-            r#"{"description":"A summary","inferred_lang":"ja-jp","tags":["CTX"]}"#,
+            r#"{"description":"A summary","inferred_lang":"ja-jp","tags":["CTX"],"experience_summary":"Worked on CTX documentation."}"#,
         )
         .unwrap();
         assert_eq!(metadata.inferred_language, "ja-JP");
+        assert_eq!(
+            metadata.metadata.experience_summary,
+            "Worked on CTX documentation."
+        );
         assert!(metadata_from_output(r#"{"inferred_lang":"ja-JP"}"#).is_err());
         assert!(metadata_from_output(r#"{"description":"No language"}"#).is_err());
         assert!(metadata_from_output(r#"{"inferred_lang":"Japanese"}"#).is_err());

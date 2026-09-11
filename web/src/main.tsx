@@ -21,7 +21,8 @@ function RouteBoundary() {
   if (
     location.pathname === "/" ||
     location.pathname.startsWith("/square") ||
-    location.pathname.startsWith("/p/")
+    location.pathname.startsWith("/p/") ||
+    location.pathname.startsWith("/u/")
   )
     return (
       <AuthMiniProvider

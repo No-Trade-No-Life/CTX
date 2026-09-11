@@ -19,7 +19,7 @@ use crate::{
     ai::{self, AiTask},
     db::{
         AiConfiguration, AiRequest, AiRun, Database, DatabaseError, Document, DocumentDetail,
-        DocumentSave, NewDocument, PublicDocumentDetail, PublicDocumentSummary,
+        DocumentSave, NewDocument, PublicDocumentDetail, PublicDocumentSummary, PublicUserProfile,
     },
     language::normalize_language_tag,
     resources::{ResourceError, ResourceMonitor, SystemResourcesSnapshot},
@@ -44,6 +44,7 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         .route("/me", get(me))
         .route("/setup", post(setup_root))
         .route("/documents", get(list_documents).post(create_document))
+        .route("/profile-document", post(profile_document))
         .route(
             "/documents/{document_id}",
             get(get_document).put(save_document),
@@ -61,6 +62,10 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         .route("/api/health", get(health))
         .route("/api/public/documents", get(list_public_documents))
         .route("/api/public/documents/{document_id}", get(public_document))
+        .route(
+            "/api/public/users/{owner_id}/profile",
+            get(public_user_profile),
+        )
         .nest("/api/v1", private)
         .fallback(static_asset)
         .with_state(state)
@@ -126,6 +131,13 @@ async fn create_document(
         message: "Created document",
     })?;
     Ok((StatusCode::CREATED, Json(document)))
+}
+
+async fn profile_document(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+) -> Result<Json<DocumentDetail>, ApiError> {
+    Ok(Json(state.database.profile_document(&principal.subject)?))
 }
 
 async fn get_document(
@@ -280,6 +292,27 @@ async fn public_document(
             .or(document.translation_status);
     }
     Ok(Json(document))
+}
+
+async fn public_user_profile(
+    State(state): State<AppState>,
+    Path(owner_id): Path<String>,
+    Query(query): Query<PublicDocumentQuery>,
+) -> Result<Json<PublicUserProfile>, ApiError> {
+    let language = requested_language(query.language.as_deref())?;
+    let mut profile = state
+        .database
+        .public_user_profile(&owner_id, language.as_deref())?;
+    if let Some(document) = profile.profile.as_mut()
+        && document.is_translation_fallback
+        && language.as_deref().is_some_and(is_reader_language)
+    {
+        document.translation_status = state
+            .database
+            .request_public_translation(&document.id, language.as_deref().unwrap_or_default())?
+            .or(document.translation_status.clone());
+    }
+    Ok(Json(profile))
 }
 
 async fn static_asset(uri: Uri) -> Response {

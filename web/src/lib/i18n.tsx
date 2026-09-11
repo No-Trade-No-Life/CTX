@@ -114,7 +114,8 @@ const englishCopy = defineCopy({
   metadataKeyPoints: "Key points",
   metadataAudience: "For",
   metadataPreparing: "Article metadata is being prepared in the background.",
-  metadataWillBePrepared: "Article metadata will be extracted after publishing.",
+  metadataWillBePrepared:
+    "Article metadata will be extracted after publishing.",
   articleLanguage: "Article language",
   translationInProgressTitle: "Translation is being prepared",
   translationInProgress:
@@ -191,6 +192,25 @@ const englishCopy = defineCopy({
   aiStatusRunning: "Running",
   aiStatusSucceeded: "Succeeded",
   aiStatusFailed: "Failed",
+  personalPage: "Personal page",
+  editPersonalPage: "Edit personal page",
+  viewAuthorPage: "View profile",
+  profileActivityTitle: "Publishing activity",
+  profileActivityDescription: "Published articles over the last 52 weeks.",
+  profilePublishedCount: "{count} published articles",
+  profileActivityDay: "{date}: {count} published articles",
+  profileActivityLess: "Less",
+  profileActivityMore: "More",
+  experienceSummary: "Experience summary",
+  experienceSummaryDescription:
+    "An objective summary generated from the published profile article.",
+  experienceSummaryEmpty:
+    "The published profile article does not state experience facts yet.",
+  profileArticle: "Profile article",
+  profileArticleUnavailableTitle: "No published profile article",
+  profileArticleUnavailableDescription:
+    "This writer has not published a personal page yet.",
+  profileNotFound: "Personal page not found",
   requestFailed: "CTX could not complete this request",
 })
 
@@ -365,6 +385,22 @@ const chineseCopy: Copy = {
   aiStatusRunning: "执行中",
   aiStatusSucceeded: "成功",
   aiStatusFailed: "失败",
+  personalPage: "个人主页",
+  editPersonalPage: "编辑个人主页",
+  viewAuthorPage: "查看主页",
+  profileActivityTitle: "发布活动",
+  profileActivityDescription: "过去 52 周已发布的文章。",
+  profilePublishedCount: "已发布 {count} 篇文章",
+  profileActivityDay: "{date}：发布 {count} 篇文章",
+  profileActivityLess: "少",
+  profileActivityMore: "多",
+  experienceSummary: "经历概述",
+  experienceSummaryDescription: "根据已发布的主页文章自动生成的客观中立概述。",
+  experienceSummaryEmpty: "已发布的主页文章暂未包含可概述的经历事实。",
+  profileArticle: "主页文章",
+  profileArticleUnavailableTitle: "尚未发布主页文章",
+  profileArticleUnavailableDescription: "这位作者尚未发布个人主页。",
+  profileNotFound: "未找到个人主页",
   requestFailed: "CTX 无法完成此请求",
 }
 
@@ -543,6 +579,25 @@ const japaneseCopy: Copy = {
   aiStatusRunning: "実行中",
   aiStatusSucceeded: "成功",
   aiStatusFailed: "失敗",
+  personalPage: "個人ページ",
+  editPersonalPage: "個人ページを編集",
+  viewAuthorPage: "プロフィールを見る",
+  profileActivityTitle: "公開アクティビティ",
+  profileActivityDescription: "過去 52 週間に公開した記事です。",
+  profilePublishedCount: "公開済みの記事 {count} 件",
+  profileActivityDay: "{date}: 公開済みの記事 {count} 件",
+  profileActivityLess: "少",
+  profileActivityMore: "多",
+  experienceSummary: "経歴の要約",
+  experienceSummaryDescription:
+    "公開されたプロフィール記事から自動生成された、客観的で中立な要約です。",
+  experienceSummaryEmpty:
+    "公開されたプロフィール記事には、要約できる経歴の事実がまだありません。",
+  profileArticle: "プロフィール記事",
+  profileArticleUnavailableTitle: "公開されたプロフィール記事はありません",
+  profileArticleUnavailableDescription:
+    "この執筆者はまだ個人ページを公開していません。",
+  profileNotFound: "個人ページが見つかりません",
   requestFailed: "CTX はこのリクエストを完了できませんでした",
 }
 
@@ -606,8 +661,10 @@ const spanishCopy: Copy = {
   autosaving: "Guardando cambios…",
   autosavePending: "Cambios pendientes de guardar",
   autosaved: "Todos los cambios guardados",
-  autosaveFailed: "No se pudo guardar; este navegador conserva una copia de recuperación",
-  recoveredDocumentDraft: "Se recuperaron cambios sin guardar de este navegador",
+  autosaveFailed:
+    "No se pudo guardar; este navegador conserva una copia de recuperación",
+  recoveredDocumentDraft:
+    "Se recuperaron cambios sin guardar de este navegador",
   publishedCurrentRevision:
     "El original se publicó; el trabajo de IA continúa en segundo plano",
   documentCreated: "Documento creado",
@@ -643,8 +700,10 @@ const spanishCopy: Copy = {
   metadataTags: "Temas",
   metadataKeyPoints: "Puntos clave",
   metadataAudience: "Dirigido a",
-  metadataPreparing: "Los metadatos del artículo se están preparando en segundo plano.",
-  metadataWillBePrepared: "Los metadatos del artículo se extraerán después de publicar.",
+  metadataPreparing:
+    "Los metadatos del artículo se están preparando en segundo plano.",
+  metadataWillBePrepared:
+    "Los metadatos del artículo se extraerán después de publicar.",
   articleLanguage: "Idioma del artículo",
   translationInProgressTitle: "La traducción se está preparando",
   translationInProgress:
@@ -722,6 +781,26 @@ const spanishCopy: Copy = {
   aiStatusRunning: "En curso",
   aiStatusSucceeded: "Completado",
   aiStatusFailed: "Fallido",
+  personalPage: "Página personal",
+  editPersonalPage: "Editar página personal",
+  viewAuthorPage: "Ver perfil",
+  profileActivityTitle: "Actividad de publicación",
+  profileActivityDescription:
+    "Artículos publicados durante las últimas 52 semanas.",
+  profilePublishedCount: "{count} artículos publicados",
+  profileActivityDay: "{date}: {count} artículos publicados",
+  profileActivityLess: "Menos",
+  profileActivityMore: "Más",
+  experienceSummary: "Resumen de experiencia",
+  experienceSummaryDescription:
+    "Resumen objetivo generado a partir del artículo de perfil publicado.",
+  experienceSummaryEmpty:
+    "El artículo de perfil publicado aún no contiene hechos de experiencia.",
+  profileArticle: "Artículo de perfil",
+  profileArticleUnavailableTitle: "No hay artículo de perfil publicado",
+  profileArticleUnavailableDescription:
+    "Esta persona aún no ha publicado una página personal.",
+  profileNotFound: "Página personal no encontrada",
   requestFailed: "CTX no pudo completar esta solicitud",
 }
 
