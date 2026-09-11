@@ -21,7 +21,10 @@ public square for anyone to read.
   always-available Markdown source view. Mermaid code fences remain Markdown
   code blocks and keep their language marker when saved. Published readers
   render GFM, Mermaid diagrams, inline KaTeX formulas (`$...$`), and displayed
-  KaTeX formulas (`$$...$$`).
+  KaTeX formulas (`$$...$$`). Pasting a PNG, JPEG, GIF, or WebP image up to
+  10 MiB uploads it to CTX and inserts a content-addressed
+  `https://ctx.ntnl.io/media/{sha256}` Markdown URL; media files live under
+  `~/.ctx/media/`.
 - A public square at `#/square`, a public article reader at
   `#/p/{document_id}`, and public APIs at `/api/public/documents` and
   `/api/public/documents/{document_id}`. A signed-in article author can open

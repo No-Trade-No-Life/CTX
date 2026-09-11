@@ -1,10 +1,14 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    fs,
+    path::{Path as FilePath, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use auth_mini_axum::{AuthMiniLayer, AuthMiniPrincipal};
 use axum::{
     Json, Router,
-    body::Body,
-    extract::{Extension, Path, Query, State},
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, Extension, Path, Query, State},
     http::{HeaderValue, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -12,6 +16,7 @@ use axum::{
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tower_http::trace::TraceLayer;
 
@@ -28,22 +33,32 @@ use crate::{
 #[derive(Clone)]
 struct AppState {
     database: Database,
+    media_directory: Arc<PathBuf>,
     resources: Arc<Mutex<ResourceMonitor>>,
 }
+
+const MAX_IMAGE_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
+const PUBLIC_MEDIA_BASE_URL: &str = "https://ctx.ntnl.io/media";
 
 #[derive(RustEmbed)]
 #[folder = "web/dist/"]
 struct WebAssets;
 
 pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
+    let media_directory = Arc::new(database.media_directory());
     let state = AppState {
         resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
         database,
+        media_directory,
     };
     let private = Router::new()
         .route("/me", get(me))
         .route("/setup", post(setup_root))
         .route("/documents", get(list_documents).post(create_document))
+        .route(
+            "/media",
+            post(upload_media).layer(DefaultBodyLimit::max(MAX_IMAGE_UPLOAD_BYTES)),
+        )
         .route("/profile-document", post(profile_document))
         .route(
             "/documents/{document_id}",
@@ -60,6 +75,7 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         .route_layer(auth);
     Router::new()
         .route("/api/health", get(health))
+        .route("/media/{media_id}", get(public_media))
         .route("/api/public/documents", get(list_public_documents))
         .route("/api/public/documents/{document_id}", get(public_document))
         .route(
@@ -131,6 +147,30 @@ async fn create_document(
         message: "Created document",
     })?;
     Ok((StatusCode::CREATED, Json(document)))
+}
+
+#[derive(Debug, Serialize)]
+struct MediaUpload {
+    id: String,
+    url: String,
+}
+
+async fn upload_media(
+    State(state): State<AppState>,
+    Extension(_principal): Extension<AuthMiniPrincipal>,
+    content: Bytes,
+) -> Result<(StatusCode, Json<MediaUpload>), ApiError> {
+    image_content_type(&content).ok_or_else(|| {
+        ApiError::bad_request("only PNG, JPEG, GIF, and WebP images are supported")
+    })?;
+    let media_id = store_media(&state.media_directory, &content)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(MediaUpload {
+            url: format!("{PUBLIC_MEDIA_BASE_URL}/{media_id}"),
+            id: media_id,
+        }),
+    ))
 }
 
 async fn profile_document(
@@ -315,6 +355,61 @@ async fn public_user_profile(
     Ok(Json(profile))
 }
 
+async fn public_media(
+    State(state): State<AppState>,
+    Path(media_id): Path<String>,
+) -> Result<Response, ApiError> {
+    if !is_media_id(&media_id) {
+        return Err(ApiError::not_found());
+    }
+    let content = match fs::read(state.media_directory.join(media_id)) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ApiError::not_found());
+        }
+        Err(error) => return Err(ApiError::Media(error)),
+    };
+    let content_type = image_content_type(&content).ok_or_else(ApiError::not_found)?;
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from(content))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
+}
+
+fn image_content_type(content: &[u8]) -> Option<&'static str> {
+    if content.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if content.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if content.starts_with(b"GIF87a") || content.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if content.starts_with(b"RIFF") && content.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+fn store_media(directory: &FilePath, content: &[u8]) -> Result<String, std::io::Error> {
+    fs::create_dir_all(directory)?;
+    let media_id = format!("{:x}", Sha256::digest(content));
+    let path = directory.join(&media_id);
+    if !path.exists() {
+        fs::write(path, content)?;
+    }
+    Ok(media_id)
+}
+
+fn is_media_id(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 async fn static_asset(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     if path.starts_with("api/") {
@@ -471,6 +566,8 @@ enum ApiError {
     Ai(#[from] ai::AiError),
     #[error("system resource request failed")]
     Resource(#[from] ResourceError),
+    #[error("media request failed")]
+    Media(#[from] std::io::Error),
 }
 
 impl ApiError {
@@ -500,6 +597,7 @@ impl IntoResponse for ApiError {
             Self::Conflict => StatusCode::CONFLICT,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Database(_) | Self::Ai(_) | Self::Resource(_) => StatusCode::BAD_GATEWAY,
+            Self::Media(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let message = self.to_string();
         (status, Json(json!({"error": message}))).into_response()
@@ -508,7 +606,16 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{requested_language, source_language_or_und};
+    use super::{
+        AppState, image_content_type, is_media_id, public_media, requested_language,
+        source_language_or_und, store_media,
+    };
+    use crate::{db::Database, resources::ResourceMonitor};
+    use axum::{
+        extract::{Path, State},
+        http::{StatusCode, header},
+    };
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn normalizes_requested_reader_languages() {
@@ -524,5 +631,48 @@ mod tests {
         assert_eq!(source_language_or_und(None).unwrap(), "und");
         assert_eq!(source_language_or_und(Some("ja-jp")).unwrap(), "ja-JP");
         assert!(source_language_or_und(Some("Japanese")).is_err());
+    }
+
+    #[test]
+    fn accepts_supported_image_bytes_and_content_hash_identifiers() {
+        assert_eq!(
+            image_content_type(b"\x89PNG\r\n\x1a\nimage"),
+            Some("image/png")
+        );
+        assert_eq!(
+            image_content_type(&[0xff, 0xd8, 0xff, 0xe0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(image_content_type(b"GIF89aimage"), Some("image/gif"));
+        assert_eq!(image_content_type(b"RIFF____WEBPimage"), Some("image/webp"));
+        assert!(image_content_type(b"not an image").is_none());
+        assert!(is_media_id(&"a".repeat(64)));
+        assert!(!is_media_id(&"g".repeat(64)));
+        assert!(!is_media_id(&"A".repeat(64)));
+        assert!(!is_media_id("../media"));
+    }
+
+    #[tokio::test]
+    async fn stored_images_are_content_addressed_and_publicly_readable() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let media_directory = Arc::new(database.media_directory());
+        let media_id = store_media(&media_directory, b"\x89PNG\r\n\x1a\nimage").unwrap();
+        let response = public_media(
+            State(AppState {
+                resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
+                database,
+                media_directory,
+            }),
+            Path(media_id),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
     }
 }

@@ -347,6 +347,13 @@ impl Database {
         })
     }
 
+    pub fn media_directory(&self) -> PathBuf {
+        self.database_path.parent().map_or_else(
+            || PathBuf::from("media"),
+            |directory| directory.join("media"),
+        )
+    }
+
     pub fn database_path(&self) -> PathBuf {
         self.database_path.as_ref().clone()
     }

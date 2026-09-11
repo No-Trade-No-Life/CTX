@@ -49,7 +49,7 @@ import {
 } from "react-router-dom"
 import { toast } from "sonner"
 
-import { request } from "./lib/api"
+import { request, upload } from "./lib/api"
 import {
   clearDocumentDraft,
   clearNewDocumentDraft,
@@ -68,6 +68,7 @@ import type {
   AiRun,
   Document,
   DocumentDetail,
+  MediaUpload,
   Me,
   PublishedMetadata,
   PublicDocument,
@@ -183,6 +184,14 @@ function LanguageSelect() {
         </SelectGroup>
       </SelectContent>
     </Select>
+  )
+}
+
+function useImageUpload(token: string) {
+  return useCallback(
+    async (image: File) =>
+      (await upload<MediaUpload>("/api/v1/media", image, token)).url,
+    [token]
   )
 }
 
@@ -513,6 +522,7 @@ function NewDocumentPage({ token }: { token: string }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { t } = useI18n()
+  const imageUpload = useImageUpload(token)
   const documents = useQuery({
     queryKey: ["documents", token],
     queryFn: () => request<Document[]>("/api/v1/documents", token),
@@ -587,6 +597,7 @@ function NewDocumentPage({ token }: { token: string }) {
         onContentChange={(value) =>
           updateDraft(documentDraftFrom(title, sourceLanguage, value))
         }
+        onImageUpload={imageUpload}
       />
     </main>
   )
@@ -626,6 +637,7 @@ function ExistingDocumentEditor({
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { t } = useI18n()
+  const imageUpload = useImageUpload(token)
   const savedServerDraft = documentDraftFrom(
     detail.document.title,
     detail.document.source_language,
@@ -917,6 +929,7 @@ function ExistingDocumentEditor({
           onContentChange={(value) =>
             updateDraft(documentDraftFrom(title, sourceLanguage, value))
           }
+          onImageUpload={imageUpload}
           onBlur={saveAfterBlur}
         />
       </section>
@@ -986,6 +999,7 @@ function EditorFields({
   onTitleChange,
   onSourceLanguageChange,
   onContentChange,
+  onImageUpload,
   onBlur,
 }: {
   title: string
@@ -997,6 +1011,7 @@ function EditorFields({
   onTitleChange: (value: string) => void
   onSourceLanguageChange: (value: string) => void
   onContentChange: (value: string) => void
+  onImageUpload: (image: File) => Promise<string>
   onBlur?: () => void
 }) {
   const { t } = useI18n()
@@ -1041,6 +1056,7 @@ function EditorFields({
         value={content}
         disabled={disabled}
         onChange={onContentChange}
+        onImageUpload={onImageUpload}
         documentReferences={documentReferences}
         currentDocumentId={currentDocumentId}
         writeLabel={t("editorWrite")}
@@ -1050,6 +1066,8 @@ function EditorFields({
         insertLinkLabel={t("editorInsertLink")}
         insertDocumentLinkLabel={t("editorInsertDocument")}
         insertImageLabel={t("editorInsertImage")}
+        imageUploadingLabel={t("editorUploadingImage")}
+        imageUploadFailedLabel={t("editorImageUploadFailed")}
         insertUrlLabel={t("editorInsertUrl")}
         insertLabel={t("editorInsert")}
         cancelLabel={t("cancel")}
