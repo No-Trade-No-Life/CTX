@@ -9,8 +9,10 @@ public square for anyone to read.
 - Auth Mini sign-in for `auth.ntnl.io` users and a first-user root setup flow.
 - SQLite with WAL mode, foreign keys, a five-second busy timeout, and immutable
   Markdown revisions.
-- Direct document creation and editing for each authenticated user. Saving
-  creates a new revision; publishing fixes the current revision as public.
+- Direct document creation, editing, and deletion for each authenticated user.
+  Saving creates a new revision; publishing fixes the current revision as
+  public. Authors can set an imported document's publication time before or
+  after publishing without changing its Markdown revision.
 - Existing documents save after five seconds of editing inactivity, whenever
   the editor loses focus, and at least every 15 seconds while changes remain.
   Every unsaved edit also has a browser-local recovery copy, including a new
@@ -25,10 +27,16 @@ public square for anyone to read.
   10 MiB uploads it to CTX and inserts a content-addressed
   `https://ctx.ntnl.io/media/{sha256}` Markdown URL; media files live under
   `~/.ctx/media/`.
-- A public square at `#/square`, a public article reader at
-  `#/p/{document_id}`, and public APIs at `/api/public/documents` and
-  `/api/public/documents/{document_id}`. A signed-in article author can open
-  its editor directly from the public reader.
+- The square, article reader, profile page, and authenticated editor use the
+  same responsive sidebar and header layout. The sidebar includes the
+  signed-in user's personal page at `#/u/{owner_id}`. Public articles are at
+  `#/p/{document_id}`, and public document APIs are available at
+  `/api/public/documents` and `/api/public/documents/{document_id}`. A
+  signed-in article author can open its editor directly from the public reader.
+- Readers can post comments on a whole published article or select a passage
+  for an anchored inline comment. Comments are scoped to the published
+  Markdown revision and the language being read; public reads use
+  `/api/public/documents/{document_id}/comments`.
 - Every author can create one dedicated profile document. Its public page at
   `#/u/{owner_id}` presents Linkit identity and avatar, a 52-week heatmap of
   published articles, and URL-state tabs for an objective AI-generated

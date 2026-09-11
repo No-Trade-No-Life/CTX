@@ -23,8 +23,9 @@ use tower_http::trace::TraceLayer;
 use crate::{
     ai::{self, AiTask},
     db::{
-        AiConfiguration, AiRequest, AiRun, Database, DatabaseError, Document, DocumentDetail,
-        DocumentSave, NewDocument, PublicDocumentDetail, PublicDocumentSummary, PublicUserProfile,
+        AiConfiguration, AiRequest, AiRun, Database, DatabaseError, Document, DocumentComment,
+        DocumentDetail, DocumentSave, NewDocument, NewDocumentComment, PublicDocumentDetail,
+        PublicDocumentSummary, PublicUserProfile,
     },
     language::normalize_language_tag,
     resources::{ResourceError, ResourceMonitor, SystemResourcesSnapshot},
@@ -62,9 +63,17 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         .route("/profile-document", post(profile_document))
         .route(
             "/documents/{document_id}",
-            get(get_document).put(save_document),
+            get(get_document).put(save_document).delete(delete_document),
+        )
+        .route(
+            "/documents/{document_id}/publication",
+            get(publication_time).put(update_publication_time),
         )
         .route("/documents/{document_id}/publish", post(publish_document))
+        .route(
+            "/public-documents/{document_id}/comments",
+            post(create_public_comment),
+        )
         .route("/documents/{document_id}/ai", post(run_ai_task))
         .route(
             "/admin/ai",
@@ -78,6 +87,10 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         .route("/media/{media_id}", get(public_media))
         .route("/api/public/documents", get(list_public_documents))
         .route("/api/public/documents/{document_id}", get(public_document))
+        .route(
+            "/api/public/documents/{document_id}/comments",
+            get(public_comments),
+        )
         .route(
             "/api/public/users/{owner_id}/profile",
             get(public_user_profile),
@@ -222,6 +235,46 @@ async fn save_document(
     Ok(Json(document))
 }
 
+async fn delete_document(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Path(document_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    require_document_owner(&state.database, &principal, &document_id)?;
+    if state.database.delete_document(&document_id)? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found())
+    }
+}
+
+async fn publication_time(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Path(document_id): Path<String>,
+) -> Result<Json<PublicationTime>, ApiError> {
+    require_document_owner(&state.database, &principal, &document_id)?;
+    let published_at = state.database.publication_time(&document_id)?;
+    Ok(Json(PublicationTime { published_at }))
+}
+
+async fn update_publication_time(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Path(document_id): Path<String>,
+    Json(input): Json<PublicationTimeInput>,
+) -> Result<Json<PublicationTime>, ApiError> {
+    require_document_owner(&state.database, &principal, &document_id)?;
+    validate_publication_time(input.published_at)?;
+    let published_at = state
+        .database
+        .update_publication_time(&document_id, input.published_at)?
+        .ok_or_else(ApiError::not_found)?;
+    Ok(Json(PublicationTime {
+        published_at: Some(published_at),
+    }))
+}
+
 async fn publish_document(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthMiniPrincipal>,
@@ -332,6 +385,43 @@ async fn public_document(
             .or(document.translation_status);
     }
     Ok(Json(document))
+}
+
+async fn public_comments(
+    State(state): State<AppState>,
+    Path(document_id): Path<String>,
+    Query(query): Query<PublicDocumentQuery>,
+) -> Result<Json<Vec<DocumentComment>>, ApiError> {
+    let language = requested_language(query.language.as_deref())?
+        .ok_or_else(|| ApiError::bad_request("language is required"))?;
+    Ok(Json(
+        state.database.public_comments(&document_id, &language)?,
+    ))
+}
+
+async fn create_public_comment(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Path(document_id): Path<String>,
+    Json(input): Json<DocumentCommentInput>,
+) -> Result<(StatusCode, Json<DocumentComment>), ApiError> {
+    let language = normalize_language_tag(&input.language)
+        .ok_or_else(|| ApiError::bad_request("language must be a BCP 47 tag"))?;
+    validate_comment_input(&input)?;
+    let anchor = input.anchor.as_ref();
+    let comment = state
+        .database
+        .create_public_comment(&NewDocumentComment {
+            document_id: &document_id,
+            author_id: &principal.subject,
+            language: &language,
+            content: input.content.trim(),
+            quote: anchor.map(|anchor| anchor.quote.trim()),
+            prefix: anchor.map(|anchor| anchor.prefix.as_str()),
+            suffix: anchor.map(|anchor| anchor.suffix.as_str()),
+        })?
+        .ok_or_else(ApiError::not_found)?;
+    Ok((StatusCode::CREATED, Json(comment)))
 }
 
 async fn public_user_profile(
@@ -449,6 +539,30 @@ struct DocumentUpdateInput {
 }
 
 #[derive(Debug, Deserialize)]
+struct PublicationTimeInput {
+    published_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicationTime {
+    published_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DocumentCommentInput {
+    language: String,
+    content: String,
+    anchor: Option<DocumentCommentAnchorInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DocumentCommentAnchorInput {
+    quote: String,
+    prefix: String,
+    suffix: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct AiTaskInput {
     task: AiTask,
 }
@@ -544,6 +658,37 @@ fn validate_document_input(input: &DocumentInput) -> Result<(), ApiError> {
 fn validate_document_update(input: &DocumentUpdateInput) -> Result<(), ApiError> {
     if input.title.trim().is_empty() {
         return Err(ApiError::bad_request("document title is required"));
+    }
+    Ok(())
+}
+
+fn validate_publication_time(published_at: i64) -> Result<(), ApiError> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(published_at, 0)
+        .is_some()
+        .then_some(())
+        .ok_or_else(|| ApiError::bad_request("published_at must be a valid Unix timestamp"))
+}
+
+fn validate_comment_input(input: &DocumentCommentInput) -> Result<(), ApiError> {
+    if input.content.trim().is_empty() {
+        return Err(ApiError::bad_request("comment content is required"));
+    }
+    if input.content.chars().count() > 4_000 {
+        return Err(ApiError::bad_request(
+            "comment content must be at most 4000 characters",
+        ));
+    }
+    let Some(anchor) = input.anchor.as_ref() else {
+        return Ok(());
+    };
+    if anchor.quote.trim().is_empty() {
+        return Err(ApiError::bad_request("comment anchor quote is required"));
+    }
+    if anchor.quote.chars().count() > 1_200
+        || anchor.prefix.chars().count() > 160
+        || anchor.suffix.chars().count() > 160
+    {
+        return Err(ApiError::bad_request("comment anchor is too long"));
     }
     Ok(())
 }

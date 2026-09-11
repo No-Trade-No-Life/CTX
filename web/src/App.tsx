@@ -14,6 +14,7 @@ import { LinkitMyInfo, LinkitUserInfo } from "linkit-react-components"
 import {
   ArrowLeftIcon,
   BookOpenIcon,
+  CalendarClockIcon,
   CpuIcon,
   DatabaseIcon,
   ExternalLinkIcon,
@@ -23,6 +24,7 @@ import {
   LanguagesIcon,
   LoaderCircleIcon,
   MemoryStickIcon,
+  MessageSquareIcon,
   NetworkIcon,
   PencilIcon,
   PlusIcon,
@@ -31,7 +33,9 @@ import {
   Settings2Icon,
   ShieldCheckIcon,
   SparklesIcon,
+  Trash2Icon,
   UserRoundIcon,
+  XIcon,
   type LucideIcon,
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
@@ -67,6 +71,7 @@ import type {
   AiRequest,
   AiRun,
   Document,
+  DocumentComment,
   DocumentDetail,
   MediaUpload,
   Me,
@@ -74,6 +79,7 @@ import type {
   PublicDocument,
   PublicDocumentDetail,
   PublicUserProfile,
+  PublicationTime,
   SystemResources,
 } from "./lib/types"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -127,6 +133,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Tooltip,
   TooltipContent,
@@ -148,13 +155,7 @@ export default function App() {
 export function PublicApp() {
   return (
     <>
-      <Routes>
-        <Route path="/" element={<Navigate to="/square" replace />} />
-        <Route path="/square" element={<SquarePage />} />
-        <Route path="/p/:documentId" element={<PublicDocumentPage />} />
-        <Route path="/u/:ownerId" element={<PublicUserPage />} />
-        <Route path="*" element={<Navigate to="/square" replace />} />
-      </Routes>
+      <PublicShell />
       <Toaster />
     </>
   )
@@ -202,11 +203,159 @@ function PrivateApp() {
   return <CtxShell token={session.accessToken} />
 }
 
+function PublicShell() {
+  const queryClient = useQueryClient()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const { isReady, isAuthenticated, session } = useAuthMini()
+  const { t } = useI18n()
+  const title = publicPageTitle(location.pathname, t)
+  useBrowserTitle(
+    location.pathname.startsWith("/p/") || location.pathname.startsWith("/u/")
+      ? undefined
+      : title
+  )
+  const me = useQuery({
+    queryKey: ["me", session?.accessToken],
+    queryFn: () => request<Me>("/api/v1/me", session?.accessToken ?? undefined),
+    enabled: isReady && isAuthenticated && Boolean(session?.accessToken),
+  })
+  const signedIn = Boolean(me.data && !me.data.setup_required)
+
+  return (
+    <TooltipProvider>
+      <SidebarProvider>
+        <Sidebar collapsible="icon">
+          <SidebarHeader className="px-3 py-4">
+            <Button
+              variant="ghost"
+              className="w-full justify-start px-1.5 font-semibold"
+              onClick={() => navigate("/square")}
+            >
+              <span className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
+                C
+              </span>
+              <span className="group-data-[collapsible=icon]:hidden">
+                {t("appName")}
+              </span>
+            </Button>
+          </SidebarHeader>
+          <SidebarContent>
+            <SidebarGroup>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {signedIn ? (
+                    <NavItem
+                      active={false}
+                      icon={FileTextIcon}
+                      onClick={() => navigate("/documents")}
+                    >
+                      {t("navigationDocuments")}
+                    </NavItem>
+                  ) : null}
+                  <NavItem
+                    active={location.pathname === "/square"}
+                    icon={Globe2Icon}
+                    onClick={() => navigate("/square")}
+                  >
+                    {t("navigationSquare")}
+                  </NavItem>
+                  {signedIn && me.data ? (
+                    <NavItem
+                      active={location.pathname === `/u/${me.data.user_id}`}
+                      icon={UserRoundIcon}
+                      onClick={() => navigate(`/u/${me.data.user_id}`)}
+                    >
+                      {t("navigationPersonalPage")}
+                    </NavItem>
+                  ) : null}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+            {me.data?.is_root ? (
+              <SidebarGroup>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    <NavItem
+                      active={false}
+                      icon={Settings2Icon}
+                      onClick={() => navigate("/admin")}
+                    >
+                      {t("navigationAdministration")}
+                    </NavItem>
+                    <NavItem
+                      active={false}
+                      icon={SparklesIcon}
+                      onClick={() => navigate("/admin/ai-requests")}
+                    >
+                      {t("navigationAiRequests")}
+                    </NavItem>
+                    <NavItem
+                      active={false}
+                      icon={HardDriveIcon}
+                      onClick={() => navigate("/admin/system-resources")}
+                    >
+                      {t("navigationSystemResources")}
+                    </NavItem>
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            ) : null}
+          </SidebarContent>
+        </Sidebar>
+        <SidebarInset>
+          <header className="sticky top-0 z-10 flex h-14 items-center gap-3 border-b bg-background px-4">
+            <SidebarTrigger />
+            <Separator orientation="vertical" className="h-5" />
+            <p className="min-w-0 flex-1 truncate text-sm font-medium">
+              {publicPageTitle(location.pathname, t)}
+            </p>
+            {me.data?.is_root ? (
+              <Badge variant="outline" className="hidden sm:inline-flex">
+                <ShieldCheckIcon data-icon="inline-start" />
+                {t("root")}
+              </Badge>
+            ) : null}
+            <LanguageSelect />
+            <LinkitMyInfo />
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={t("refreshDocuments")}
+                    onClick={() => void queryClient.invalidateQueries()}
+                  />
+                }
+              >
+                <RefreshCwIcon />
+              </TooltipTrigger>
+              <TooltipContent>{t("refreshDocuments")}</TooltipContent>
+            </Tooltip>
+          </header>
+          <Routes>
+            <Route path="/" element={<Navigate to="/square" replace />} />
+            <Route path="/square" element={<SquarePage />} />
+            <Route path="/p/:documentId" element={<PublicDocumentPage />} />
+            <Route path="/u/:ownerId" element={<PublicUserPage />} />
+            <Route path="*" element={<Navigate to="/square" replace />} />
+          </Routes>
+        </SidebarInset>
+      </SidebarProvider>
+    </TooltipProvider>
+  )
+}
+
 function CtxShell({ token }: { token: string }) {
   const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
   const { t } = useI18n()
+  const title = pageTitle(location.pathname, t)
+  useBrowserTitle(
+    location.pathname.startsWith("/documents/") ? undefined : title
+  )
   const me = useQuery({
     queryKey: ["me", token],
     queryFn: () => request<Me>("/api/v1/me", token),
@@ -249,11 +398,18 @@ function CtxShell({ token }: { token: string }) {
                     {t("navigationDocuments")}
                   </NavItem>
                   <NavItem
-                    active={false}
+                    active={location.pathname === "/square"}
                     icon={Globe2Icon}
                     onClick={() => navigate("/square")}
                   >
                     {t("navigationSquare")}
+                  </NavItem>
+                  <NavItem
+                    active={location.pathname === `/u/${me.data.user_id}`}
+                    icon={UserRoundIcon}
+                    onClick={() => navigate(`/u/${me.data.user_id}`)}
+                  >
+                    {t("navigationPersonalPage")}
                   </NavItem>
                 </SidebarMenu>
               </SidebarGroupContent>
@@ -522,6 +678,7 @@ function NewDocumentPage({ token }: { token: string }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { t } = useI18n()
+  useBrowserTitle(t("newDocument"))
   const imageUpload = useImageUpload(token)
   const documents = useQuery({
     queryKey: ["documents", token],
@@ -638,6 +795,8 @@ function ExistingDocumentEditor({
   const queryClient = useQueryClient()
   const { t } = useI18n()
   const imageUpload = useImageUpload(token)
+  const isPublished = detail.document.status === "published"
+  const [deleteArmed, setDeleteArmed] = useState(false)
   const savedServerDraft = documentDraftFrom(
     detail.document.title,
     detail.document.source_language,
@@ -648,6 +807,7 @@ function ExistingDocumentEditor({
   )
   const initialDraft = recoveredDraft ?? savedServerDraft
   const [title, setTitle] = useState(initialDraft.title)
+  useBrowserTitle(title || t("document"))
   const [sourceLanguage, setSourceLanguage] = useState(
     initialDraft.sourceLanguage
   )
@@ -757,6 +917,23 @@ function ExistingDocumentEditor({
       showError(error)
     },
   })
+  const remove = useMutation({
+    mutationFn: () =>
+      request<void>(`/api/v1/documents/${detail.document.id}`, token, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      clearDocumentDraft(detail.document.id)
+      toast.success(t("documentDeleted"))
+      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      void queryClient.invalidateQueries({ queryKey: ["public-documents"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["public-document", detail.document.id],
+      })
+      navigate("/documents", { replace: true })
+    },
+    onError: showError,
+  })
   const saveMutationRef = useRef(save.mutate)
   const publishMutationRef = useRef(publish.mutate)
   const savePendingRef = useRef(save.isPending)
@@ -835,8 +1012,7 @@ function ExistingDocumentEditor({
     detail.revision.content,
     detail.revision.id,
   ])
-  const isPublished = detail.document.status === "published"
-  const isWriting = save.isPending || publish.isPending
+  const isWriting = save.isPending || publish.isPending || remove.isPending
   const autosaveStatus = isWriting
     ? t("autosaving")
     : autosaveFailed
@@ -894,6 +1070,42 @@ function ExistingDocumentEditor({
                 )}
                 {t("publish")}
               </Button>
+              {deleteArmed ? (
+                <>
+                  <Button
+                    variant="ghost"
+                    disabled={remove.isPending}
+                    onClick={() => setDeleteArmed(false)}
+                  >
+                    <XIcon data-icon="inline-start" />
+                    {t("cancel")}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    disabled={remove.isPending}
+                    onClick={() => remove.mutate()}
+                  >
+                    {remove.isPending ? (
+                      <LoaderCircleIcon
+                        className="animate-spin"
+                        data-icon="inline-start"
+                      />
+                    ) : (
+                      <Trash2Icon data-icon="inline-start" />
+                    )}
+                    {t("deleteDocumentConfirm")}
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="ghost"
+                  disabled={isWriting}
+                  onClick={() => setDeleteArmed(true)}
+                >
+                  <Trash2Icon data-icon="inline-start" />
+                  {t("deleteDocument")}
+                </Button>
+              )}
             </div>
           }
         />
@@ -932,6 +1144,7 @@ function ExistingDocumentEditor({
           onImageUpload={imageUpload}
           onBlur={saveAfterBlur}
         />
+        <PublicationTimeEditor token={token} documentId={detail.document.id} />
       </section>
       <aside className="min-w-0 xl:pt-14">
         <EditorialMetadata
@@ -1076,6 +1289,100 @@ function EditorFields({
         draftLabel={t("draft")}
       />
       <FieldDescription>{t("markdownDescription")}</FieldDescription>
+    </section>
+  )
+}
+
+function PublicationTimeEditor({
+  token,
+  documentId,
+}: {
+  token: string
+  documentId: string
+}) {
+  const queryClient = useQueryClient()
+  const { t } = useI18n()
+  const publicationTime = useQuery({
+    queryKey: ["publication-time", token, documentId],
+    queryFn: () =>
+      request<PublicationTime>(
+        `/api/v1/documents/${documentId}/publication`,
+        token
+      ),
+  })
+  const [value, setValue] = useState<string | null>(null)
+  const publicationValue =
+    value ??
+    (publicationTime.data?.published_at != null
+      ? datetimeLocalValue(publicationTime.data.published_at)
+      : "")
+  const update = useMutation({
+    mutationFn: () =>
+      request<PublicationTime>(
+        `/api/v1/documents/${documentId}/publication`,
+        token,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            published_at: Math.floor(
+              new Date(publicationValue).getTime() / 1_000
+            ),
+          }),
+        }
+      ),
+    onSuccess: () => {
+      toast.success(t("publicationTimeSaved"))
+      void queryClient.invalidateQueries({ queryKey: ["public-documents"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["public-document", documentId],
+      })
+      void queryClient.invalidateQueries({ queryKey: ["public-user-profile"] })
+    },
+    onError: showError,
+  })
+
+  if (publicationTime.isPending)
+    return <Skeleton className="mt-8 h-24 w-full" />
+  if (publicationTime.error) return <PageError error={publicationTime.error} />
+
+  return (
+    <section className="mt-8 max-w-4xl border-t pt-6">
+      <Field className="gap-1">
+        <FieldLabel htmlFor="document-publication-time">
+          <CalendarClockIcon data-icon="inline-start" />
+          {t("publicationTime")}
+        </FieldLabel>
+        <FieldDescription>{t("publicationTimeDescription")}</FieldDescription>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Input
+            id="document-publication-time"
+            type="datetime-local"
+            value={publicationValue}
+            disabled={update.isPending}
+            className="w-auto"
+            onChange={(event) => setValue(event.target.value)}
+          />
+          <Button
+            variant="outline"
+            disabled={
+              update.isPending ||
+              !publicationValue ||
+              Number.isNaN(new Date(publicationValue).getTime())
+            }
+            onClick={() => update.mutate()}
+          >
+            {update.isPending ? (
+              <LoaderCircleIcon
+                className="animate-spin"
+                data-icon="inline-start"
+              />
+            ) : (
+              <SaveIcon data-icon="inline-start" />
+            )}
+            {t("savePublicationTime")}
+          </Button>
+        </div>
+      </Field>
     </section>
   )
 }
@@ -1407,6 +1714,7 @@ function EditorialMetadata({
 function SquarePage() {
   const navigate = useNavigate()
   const { locale, t } = useI18n()
+  useBrowserTitle(t("pageTitleSquare"))
   const documents = useQuery({
     queryKey: ["public-documents", locale],
     queryFn: () =>
@@ -1416,74 +1724,50 @@ function SquarePage() {
   })
 
   return (
-    <main className="min-h-svh">
-      <PublicHeader onStartWriting={() => navigate("/documents")} />
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-10 p-6 md:py-14">
-        <section className="max-w-2xl">
-          <h1 className="text-3xl font-semibold tracking-tight text-balance">
-            {t("squareTitle")}
-          </h1>
-          <p className="mt-3 text-base leading-7 text-muted-foreground">
-            {t("squareDescription")}
-          </p>
+    <main className="mx-auto flex w-full max-w-4xl flex-col gap-10 p-6 md:py-14">
+      <section className="max-w-2xl">
+        <h1 className="text-3xl font-semibold tracking-tight text-balance">
+          {t("squareTitle")}
+        </h1>
+        <p className="mt-3 text-base leading-7 text-muted-foreground">
+          {t("squareDescription")}
+        </p>
+      </section>
+      {documents.isPending ? (
+        <PublicListSkeleton />
+      ) : documents.error ? (
+        <PageError error={documents.error} />
+      ) : (documents.data ?? []).length === 0 ? (
+        <Empty className="min-h-80">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <BookOpenIcon />
+            </EmptyMedia>
+            <EmptyTitle>{t("squareEmptyTitle")}</EmptyTitle>
+            <EmptyDescription>{t("squareEmptyDescription")}</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button onClick={() => navigate("/documents")}>
+              <PlusIcon data-icon="inline-start" />
+              {t("startWriting")}
+            </Button>
+          </EmptyContent>
+        </Empty>
+      ) : (
+        <section aria-label={t("squareTitle")} className="flex flex-col">
+          {(documents.data ?? []).map((document, index) => (
+            <div key={document.id}>
+              {index > 0 ? <Separator /> : null}
+              <PublicDocumentRow
+                document={document}
+                date={formatDate(document.published_at, locale)}
+                onOpen={() => navigate(`/p/${document.id}`)}
+              />
+            </div>
+          ))}
         </section>
-        {documents.isPending ? (
-          <PublicListSkeleton />
-        ) : documents.error ? (
-          <PageError error={documents.error} />
-        ) : (documents.data ?? []).length === 0 ? (
-          <Empty className="min-h-80">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <BookOpenIcon />
-              </EmptyMedia>
-              <EmptyTitle>{t("squareEmptyTitle")}</EmptyTitle>
-              <EmptyDescription>{t("squareEmptyDescription")}</EmptyDescription>
-            </EmptyHeader>
-            <EmptyContent>
-              <Button onClick={() => navigate("/documents")}>
-                <PlusIcon data-icon="inline-start" />
-                {t("startWriting")}
-              </Button>
-            </EmptyContent>
-          </Empty>
-        ) : (
-          <section aria-label={t("squareTitle")} className="flex flex-col">
-            {(documents.data ?? []).map((document, index) => (
-              <div key={document.id}>
-                {index > 0 ? <Separator /> : null}
-                <PublicDocumentRow
-                  document={document}
-                  date={formatDate(document.published_at, locale)}
-                  onOpen={() => navigate(`/p/${document.id}`)}
-                />
-              </div>
-            ))}
-          </section>
-        )}
-      </div>
+      )}
     </main>
-  )
-}
-
-function PublicHeader({ onStartWriting }: { onStartWriting: () => void }) {
-  const navigate = useNavigate()
-  const { t } = useI18n()
-  return (
-    <header className="border-b">
-      <div className="mx-auto flex h-14 w-full max-w-4xl items-center gap-3 px-6">
-        <Button variant="ghost" onClick={() => navigate("/square")}>
-          {t("appName")}
-        </Button>
-        <div className="flex-1" />
-        <LanguageSelect />
-        <LinkitMyInfo />
-        <Button size="sm" onClick={onStartWriting}>
-          <PlusIcon data-icon="inline-start" />
-          {t("startWriting")}
-        </Button>
-      </div>
-    </header>
   )
 }
 
@@ -1543,6 +1827,11 @@ function PublicDocumentPage() {
   const navigate = useNavigate()
   const { locale, t } = useI18n()
   const { isReady, isAuthenticated, session } = useAuthMini()
+  const articleRef = useRef<HTMLElement>(null)
+  const [commentAnchor, setCommentAnchor] = useState<{
+    documentId: string
+    anchor: CommentAnchor
+  } | null>(null)
   const document = useQuery({
     queryKey: ["public-document", documentId, locale],
     queryFn: () =>
@@ -1556,93 +1845,440 @@ function PublicDocumentPage() {
         ? 2_000
         : false,
   })
+  useBrowserTitle(document.data?.title ?? t("pageTitleEditor"))
   const me = useQuery({
     queryKey: ["me", session?.accessToken],
     queryFn: () => request<Me>("/api/v1/me", session?.accessToken ?? undefined),
     enabled: isReady && isAuthenticated && Boolean(session?.accessToken),
   })
+  const activeCommentAnchor =
+    commentAnchor?.documentId === documentId ? commentAnchor.anchor : null
 
   if (document.isPending) return <LoadingPage />
   if (document.error || !document.data)
     return (
-      <main className="min-h-svh">
-        <PublicHeader onStartWriting={() => navigate("/documents")} />
-        <PageError
-          error={document.error ?? new Error(t("publishedDocumentNotFound"))}
-          action={
-            <Button variant="outline" onClick={() => navigate("/square")}>
-              <ArrowLeftIcon data-icon="inline-start" />
-              {t("backToSquare")}
-            </Button>
-          }
-        />
-      </main>
+      <PageError
+        error={document.error ?? new Error(t("publishedDocumentNotFound"))}
+        action={
+          <Button variant="outline" onClick={() => navigate("/square")}>
+            <ArrowLeftIcon data-icon="inline-start" />
+            {t("backToSquare")}
+          </Button>
+        }
+      />
     )
 
   return (
-    <main className="min-h-svh">
-      <PublicHeader onStartWriting={() => navigate("/documents")} />
-      <div className="mx-auto w-full max-w-3xl p-6 md:py-14">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/square")}>
-          <ArrowLeftIcon data-icon="inline-start" />
-          {t("backToSquare")}
-        </Button>
-        <header className="mt-10 max-w-[72ch]">
-          <h1 className="text-3xl font-semibold tracking-tight text-balance md:text-4xl">
-            {document.data.title}
-          </h1>
-          <p className="mt-3 text-sm text-muted-foreground">
-            {t("publishedOn").replace(
-              "{date}",
-              formatDate(document.data.published_at, locale)
-            )}
-          </p>
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <LinkitUserInfo userId={document.data.owner_id} compact />
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => navigate(`/u/${document.data.owner_id}`)}
-            >
-              <UserRoundIcon data-icon="inline-start" />
-              {t("viewAuthorPage")}
-            </Button>
-            <Badge variant="outline">{document.data.language}</Badge>
-            {me.data?.user_id === document.data.owner_id ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => navigate(`/documents/${document.data.id}`)}
-              >
-                <PencilIcon data-icon="inline-start" />
-                {t("editDocument")}
-              </Button>
-            ) : null}
-          </div>
-          <EditorialMetadata
-            metadata={document.data.metadata}
-            pending={Boolean(document.data.metadata_status)}
-          />
-        </header>
-        {document.data.is_translation_fallback ? (
-          <Alert className="mt-6 max-w-[72ch]">
-            <LanguagesIcon data-icon="inline-start" />
-            <AlertTitle>{t("translationInProgressTitle")}</AlertTitle>
-            <AlertDescription>{t("translationInProgress")}</AlertDescription>
-          </Alert>
-        ) : null}
-        <article className="mt-10 max-w-[72ch]">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkMath]}
-            rehypePlugins={[rehypeKatex]}
-            components={markdownComponents}
+    <main className="mx-auto w-full max-w-3xl p-6 md:py-14">
+      <Button variant="ghost" size="sm" onClick={() => navigate("/square")}>
+        <ArrowLeftIcon data-icon="inline-start" />
+        {t("backToSquare")}
+      </Button>
+      <header className="mt-10 max-w-[72ch]">
+        <h1 className="text-3xl font-semibold tracking-tight text-balance md:text-4xl">
+          {document.data.title}
+        </h1>
+        <p className="mt-3 text-sm text-muted-foreground">
+          {t("publishedOn").replace(
+            "{date}",
+            formatDate(document.data.published_at, locale)
+          )}
+        </p>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <LinkitUserInfo userId={document.data.owner_id} compact />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate(`/u/${document.data.owner_id}`)}
           >
-            {document.data.content}
-          </ReactMarkdown>
-        </article>
-      </div>
+            <UserRoundIcon data-icon="inline-start" />
+            {t("viewAuthorPage")}
+          </Button>
+          <Badge variant="outline">{document.data.language}</Badge>
+          {me.data?.user_id === document.data.owner_id ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate(`/documents/${document.data.id}`)}
+            >
+              <PencilIcon data-icon="inline-start" />
+              {t("editDocument")}
+            </Button>
+          ) : null}
+        </div>
+        <EditorialMetadata
+          metadata={document.data.metadata}
+          pending={Boolean(document.data.metadata_status)}
+        />
+      </header>
+      {document.data.is_translation_fallback ? (
+        <Alert className="mt-6 max-w-[72ch]">
+          <LanguagesIcon data-icon="inline-start" />
+          <AlertTitle>{t("translationInProgressTitle")}</AlertTitle>
+          <AlertDescription>{t("translationInProgress")}</AlertDescription>
+        </Alert>
+      ) : null}
+      <article
+        ref={articleRef}
+        data-commentable
+        className="mt-10 max-w-[72ch]"
+        onMouseUp={() => {
+          const anchor = readCommentAnchor(articleRef.current)
+          setCommentAnchor(anchor ? { documentId, anchor } : null)
+        }}
+        onKeyUp={() => {
+          const anchor = readCommentAnchor(articleRef.current)
+          setCommentAnchor(anchor ? { documentId, anchor } : null)
+        }}
+        onClick={(event) => {
+          const mark = (event.target as HTMLElement).closest<HTMLElement>(
+            "mark[data-comment-id]"
+          )
+          const commentId = mark?.dataset.commentId
+          if (commentId)
+            window.document
+              .getElementById(`comment-${commentId}`)
+              ?.scrollIntoView({ behavior: "smooth", block: "center" })
+        }}
+      >
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[rehypeKatex]}
+          components={markdownComponents}
+        >
+          {document.data.content}
+        </ReactMarkdown>
+      </article>
+      <DocumentComments
+        documentId={document.data.id}
+        language={document.data.language}
+        token={session?.accessToken ?? undefined}
+        canComment={isReady && isAuthenticated && Boolean(session?.accessToken)}
+        articleRef={articleRef}
+        anchor={activeCommentAnchor}
+        onClearAnchor={() => setCommentAnchor(null)}
+      />
     </main>
   )
+}
+
+type CommentAnchor = {
+  quote: string
+  prefix: string
+  suffix: string
+}
+
+function DocumentComments({
+  documentId,
+  language,
+  token,
+  canComment,
+  articleRef,
+  anchor,
+  onClearAnchor,
+}: {
+  documentId: string
+  language: string
+  token?: string
+  canComment: boolean
+  articleRef: { current: HTMLElement | null }
+  anchor: CommentAnchor | null
+  onClearAnchor: () => void
+}) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const { locale, t } = useI18n()
+  const [content, setContent] = useState("")
+  const comments = useQuery({
+    queryKey: ["public-document-comments", documentId, language],
+    queryFn: () =>
+      request<DocumentComment[]>(
+        `/api/public/documents/${documentId}/comments?language=${encodeURIComponent(language)}`
+      ),
+    enabled: Boolean(documentId && language),
+  })
+  const post = useMutation({
+    mutationFn: () => {
+      if (!token) throw new Error(t("signInToComment"))
+      return request<DocumentComment>(
+        `/api/v1/public-documents/${documentId}/comments`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            language,
+            content,
+            anchor: anchor ?? undefined,
+          }),
+        }
+      )
+    },
+    onSuccess: () => {
+      setContent("")
+      onClearAnchor()
+      toast.success(t("commentPosted"))
+      void queryClient.invalidateQueries({
+        queryKey: ["public-document-comments", documentId, language],
+      })
+    },
+    onError: showError,
+  })
+  useEffect(() => {
+    const article = articleRef.current
+    if (!article) return
+    return applyCommentHighlights(article, comments.data ?? [])
+  }, [articleRef, comments.data])
+
+  return (
+    <section
+      className="mt-14 max-w-[72ch] border-t pt-8"
+      aria-labelledby="comments-title"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <div>
+          <h2
+            id="comments-title"
+            className="text-xl font-semibold tracking-tight"
+          >
+            <MessageSquareIcon data-icon="inline-start" />
+            {t("commentsTitle")}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            {t("commentsDescription")}
+          </p>
+        </div>
+        <span className="text-sm text-muted-foreground">
+          {comments.data?.length ?? 0}
+        </span>
+      </div>
+      {canComment ? (
+        <form
+          className="mt-6 border-y py-5"
+          onSubmit={(event) => {
+            event.preventDefault()
+            post.mutate()
+          }}
+        >
+          {anchor ? (
+            <div className="mb-3 rounded-md bg-muted px-3 py-2 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium">{t("selectedText")}</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  onClick={onClearAnchor}
+                >
+                  <XIcon data-icon="inline-start" />
+                  {t("clearSelectionComment")}
+                </Button>
+              </div>
+              <blockquote className="mt-2 border-l border-primary/35 pl-3 leading-6 text-muted-foreground">
+                {anchor.quote}
+              </blockquote>
+            </div>
+          ) : null}
+          <Field>
+            <FieldLabel htmlFor="new-document-comment">
+              {anchor ? t("commentOnSelection") : t("writeComment")}
+            </FieldLabel>
+            <Textarea
+              id="new-document-comment"
+              value={content}
+              maxLength={4_000}
+              placeholder={t("commentPlaceholder")}
+              disabled={post.isPending}
+              className="min-h-24 resize-y"
+              onChange={(event) => setContent(event.target.value)}
+            />
+          </Field>
+          <div className="mt-3 flex justify-end">
+            <Button disabled={post.isPending || !content.trim()} type="submit">
+              {post.isPending ? (
+                <LoaderCircleIcon
+                  className="animate-spin"
+                  data-icon="inline-start"
+                />
+              ) : (
+                <MessageSquareIcon data-icon="inline-start" />
+              )}
+              {t("postComment")}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="mt-6 border-y py-5">
+          <Button variant="outline" onClick={() => navigate("/documents")}>
+            <MessageSquareIcon data-icon="inline-start" />
+            {t("signInToComment")}
+          </Button>
+        </div>
+      )}
+      {comments.isPending ? (
+        <div className="mt-6 space-y-4">
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-20 w-full" />
+        </div>
+      ) : comments.error ? (
+        <PageError error={comments.error} />
+      ) : (comments.data ?? []).length === 0 ? (
+        <p className="mt-6 text-sm leading-6 text-muted-foreground">
+          {t("commentsEmpty")}
+        </p>
+      ) : (
+        <div className="mt-2 divide-y">
+          {(comments.data ?? []).map((comment) => (
+            <article
+              id={`comment-${comment.id}`}
+              key={comment.id}
+              className="py-5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <LinkitUserInfo userId={comment.author_id} compact />
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Badge variant="outline">
+                    {comment.quote ? t("inlineComment") : t("fullComment")}
+                  </Badge>
+                  <time
+                    dateTime={new Date(
+                      comment.created_at * 1_000
+                    ).toISOString()}
+                  >
+                    {formatDateTime(comment.created_at, locale)}
+                  </time>
+                </div>
+              </div>
+              {comment.quote ? (
+                <blockquote className="mt-3 border-l border-primary/35 pl-3 text-sm leading-6 text-muted-foreground">
+                  {comment.quote}
+                </blockquote>
+              ) : null}
+              <p className="mt-3 leading-7 whitespace-pre-wrap">
+                {comment.content}
+              </p>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function readCommentAnchor(root: HTMLElement | null): CommentAnchor | null {
+  if (!root) return null
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed)
+    return null
+  const range = selection.getRangeAt(0)
+  if (
+    !root.contains(range.startContainer) ||
+    !root.contains(range.endContainer)
+  )
+    return null
+  const selected = range.toString()
+  const quote = selected.trim()
+  if (!quote || quote.length > 1_200) return null
+  const leading = selected.length - selected.trimStart().length
+  const before = range.cloneRange()
+  before.selectNodeContents(root)
+  before.setEnd(range.startContainer, range.startOffset)
+  const start = before.toString().length + leading
+  const fullText = root.textContent ?? ""
+  return {
+    quote,
+    prefix: fullText.slice(Math.max(0, start - 80), start),
+    suffix: fullText.slice(start + quote.length, start + quote.length + 80),
+  }
+}
+
+function applyCommentHighlights(
+  root: HTMLElement,
+  comments: DocumentComment[]
+) {
+  clearCommentHighlights(root)
+  const text = root.textContent ?? ""
+  const anchored = comments
+    .filter((comment) => comment.quote)
+    .flatMap((comment) => {
+      const start = commentAnchorOffset(text, comment)
+      return start === null ? [] : [{ comment, start }]
+    })
+    .sort((left, right) => right.start - left.start)
+  for (const { comment, start } of anchored) {
+    if (comment.quote)
+      highlightTextRange(root, start, start + comment.quote.length, comment)
+  }
+  return () => clearCommentHighlights(root)
+}
+
+function clearCommentHighlights(root: HTMLElement) {
+  for (const mark of root.querySelectorAll("mark[data-comment-id]")) {
+    const parent = mark.parentNode
+    if (!parent) continue
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark)
+    parent.removeChild(mark)
+    parent.normalize()
+  }
+}
+
+function commentAnchorOffset(
+  text: string,
+  comment: DocumentComment
+): number | null {
+  const quote = comment.quote
+  if (!quote) return null
+  const fallback = text.indexOf(quote)
+  let offset = fallback
+  while (offset >= 0) {
+    const prefixMatches =
+      !comment.prefix ||
+      text.slice(Math.max(0, offset - comment.prefix.length), offset) ===
+        comment.prefix
+    const suffixMatches =
+      !comment.suffix ||
+      text.slice(
+        offset + quote.length,
+        offset + quote.length + comment.suffix.length
+      ) === comment.suffix
+    if (prefixMatches && suffixMatches) return offset
+    offset = text.indexOf(quote, offset + quote.length)
+  }
+  return fallback >= 0 ? fallback : null
+}
+
+function highlightTextRange(
+  root: HTMLElement,
+  start: number,
+  end: number,
+  comment: DocumentComment
+) {
+  const walker = window.document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const nodes: Array<{ node: Text; start: number; end: number }> = []
+  let node = walker.nextNode() as Text | null
+  let offset = 0
+  while (node) {
+    const nextOffset = offset + node.data.length
+    nodes.push({ node, start: offset, end: nextOffset })
+    offset = nextOffset
+    node = walker.nextNode() as Text | null
+  }
+  for (const entry of nodes) {
+    if (entry.end <= start || entry.start >= end) continue
+    if (entry.node.parentElement?.closest("mark[data-comment-id]")) continue
+    const localStart = Math.max(0, start - entry.start)
+    const localEnd = Math.min(entry.node.data.length, end - entry.start)
+    const fragment = window.document.createDocumentFragment()
+    if (localStart) fragment.append(entry.node.data.slice(0, localStart))
+    const mark = window.document.createElement("mark")
+    mark.dataset.commentId = comment.id
+    mark.className = "ctx-inline-comment"
+    mark.tabIndex = 0
+    mark.textContent = entry.node.data.slice(localStart, localEnd)
+    fragment.append(mark)
+    if (localEnd < entry.node.data.length)
+      fragment.append(entry.node.data.slice(localEnd))
+    entry.node.replaceWith(fragment)
+  }
 }
 
 function PublicUserPage() {
@@ -1650,6 +2286,7 @@ function PublicUserPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { locale, t } = useI18n()
+  useBrowserTitle(t("pageTitlePersonalPage"))
   const { isReady, isAuthenticated, session } = useAuthMini()
   const profile = useQuery({
     queryKey: ["public-user-profile", ownerId, locale],
@@ -1694,175 +2331,167 @@ function PublicUserPage() {
   if (profile.isPending) return <LoadingPage />
   if (profile.error || !profile.data)
     return (
-      <main className="min-h-svh">
-        <PublicHeader onStartWriting={() => navigate("/documents")} />
-        <PageError
-          error={profile.error ?? new Error(t("profileNotFound"))}
-          action={
-            <Button variant="outline" onClick={() => navigate("/square")}>
-              <ArrowLeftIcon data-icon="inline-start" />
-              {t("backToSquare")}
-            </Button>
-          }
-        />
-      </main>
+      <PageError
+        error={profile.error ?? new Error(t("profileNotFound"))}
+        action={
+          <Button variant="outline" onClick={() => navigate("/square")}>
+            <ArrowLeftIcon data-icon="inline-start" />
+            {t("backToSquare")}
+          </Button>
+        }
+      />
     )
 
   const document = profile.data.profile
   const isOwner = me.data?.user_id === profile.data.owner_id
   return (
-    <main className="min-h-svh">
-      <PublicHeader onStartWriting={() => navigate("/documents")} />
-      <div className="mx-auto w-full max-w-6xl p-6 md:py-14">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/square")}>
-          <ArrowLeftIcon data-icon="inline-start" />
-          {t("backToSquare")}
-        </Button>
-        <header className="mt-10 flex flex-wrap items-start justify-between gap-5 border-b pb-10">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">
-              {t("personalPage")}
-            </h1>
-            <div className="mt-3">
-              <LinkitUserInfo userId={profile.data.owner_id} />
-            </div>
+    <main className="mx-auto w-full max-w-6xl p-6 md:py-14">
+      <Button variant="ghost" size="sm" onClick={() => navigate("/square")}>
+        <ArrowLeftIcon data-icon="inline-start" />
+        {t("backToSquare")}
+      </Button>
+      <header className="mt-10 flex flex-wrap items-start justify-between gap-5 border-b pb-10">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {t("personalPage")}
+          </h1>
+          <div className="mt-3">
+            <LinkitUserInfo userId={profile.data.owner_id} />
           </div>
-          {isOwner ? (
-            <Button
-              variant="outline"
-              disabled={profileDocument.isPending}
-              onClick={() => profileDocument.mutate()}
-            >
-              {profileDocument.isPending ? (
-                <LoaderCircleIcon
-                  className="animate-spin"
-                  data-icon="inline-start"
-                />
-              ) : (
-                <PencilIcon data-icon="inline-start" />
-              )}
-              {t("editPersonalPage")}
-            </Button>
-          ) : null}
-        </header>
-        <section className="py-10" aria-labelledby="profile-activity-title">
-          <div className="flex flex-wrap items-baseline justify-between gap-3">
-            <div>
-              <h2
-                id="profile-activity-title"
-                className="text-xl font-semibold tracking-tight"
-              >
-                {t("profileActivityTitle")}
-              </h2>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                {t("profileActivityDescription")}
-              </p>
-            </div>
-            <span className="text-sm text-muted-foreground">
-              {t("profilePublishedCount").replace(
-                "{count}",
-                String(profile.data.published_article_dates.length)
-              )}
-            </span>
-          </div>
-          <PublicationHeatmap dates={profile.data.published_article_dates} />
-        </section>
-        {document ? (
-          <Tabs
-            value={activeTab}
-            onValueChange={(tab) => {
-              const nextSearchParams = new URLSearchParams(searchParams)
-              nextSearchParams.set("tab", tab)
-              setSearchParams(nextSearchParams)
-            }}
-            className="border-t pt-10"
+        </div>
+        {isOwner ? (
+          <Button
+            variant="outline"
+            disabled={profileDocument.isPending}
+            onClick={() => profileDocument.mutate()}
           >
-            <TabsList aria-label={t("personalPage")}>
-              <TabsTrigger value="resume">{t("profileTabResume")}</TabsTrigger>
-              <TabsTrigger value="article">
-                {t("profileTabArticle")}
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="resume" className="mt-8 max-w-[72ch]">
-              <h2 className="text-3xl font-semibold tracking-tight text-balance">
-                {t("experienceSummary")}
-              </h2>
-              <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                {t("experienceSummaryDescription")}
-              </p>
-              {document.metadata.experience_summary ? (
-                <article className="mt-10">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
-                    components={markdownComponents}
-                  >
-                    {document.metadata.experience_summary}
-                  </ReactMarkdown>
-                </article>
-              ) : document.metadata_status ? (
-                <Skeleton className="mt-8 h-48 w-full" />
-              ) : (
-                <p className="mt-8 text-sm leading-7 text-muted-foreground">
-                  {t("experienceSummaryEmpty")}
-                </p>
-              )}
-            </TabsContent>
-            <TabsContent value="article" className="mt-8 max-w-[72ch]">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">
-                    {t("profileArticle")}
-                  </p>
-                  <h2
-                    id="profile-article-title"
-                    className="mt-2 text-3xl font-semibold tracking-tight text-balance"
-                  >
-                    {document.title}
-                  </h2>
-                </div>
-                <Badge variant="outline">{document.language}</Badge>
-              </div>
-              <p className="mt-3 text-sm text-muted-foreground">
-                {t("publishedOn").replace(
-                  "{date}",
-                  formatDate(document.published_at, locale)
-                )}
-              </p>
-              {document.is_translation_fallback ? (
-                <Alert className="mt-6">
-                  <LanguagesIcon data-icon="inline-start" />
-                  <AlertTitle>{t("translationInProgressTitle")}</AlertTitle>
-                  <AlertDescription>
-                    {t("translationInProgress")}
-                  </AlertDescription>
-                </Alert>
-              ) : null}
-              <article className="mt-10 max-w-[72ch]">
+            {profileDocument.isPending ? (
+              <LoaderCircleIcon
+                className="animate-spin"
+                data-icon="inline-start"
+              />
+            ) : (
+              <PencilIcon data-icon="inline-start" />
+            )}
+            {t("editPersonalPage")}
+          </Button>
+        ) : null}
+      </header>
+      <section className="py-10" aria-labelledby="profile-activity-title">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div>
+            <h2
+              id="profile-activity-title"
+              className="text-xl font-semibold tracking-tight"
+            >
+              {t("profileActivityTitle")}
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              {t("profileActivityDescription")}
+            </p>
+          </div>
+          <span className="text-sm text-muted-foreground">
+            {t("profilePublishedCount").replace(
+              "{count}",
+              String(profile.data.published_article_dates.length)
+            )}
+          </span>
+        </div>
+        <PublicationHeatmap dates={profile.data.published_article_dates} />
+      </section>
+      {document ? (
+        <Tabs
+          value={activeTab}
+          onValueChange={(tab) => {
+            const nextSearchParams = new URLSearchParams(searchParams)
+            nextSearchParams.set("tab", tab)
+            setSearchParams(nextSearchParams)
+          }}
+          className="border-t pt-10"
+        >
+          <TabsList aria-label={t("personalPage")}>
+            <TabsTrigger value="resume">{t("profileTabResume")}</TabsTrigger>
+            <TabsTrigger value="article">{t("profileTabArticle")}</TabsTrigger>
+          </TabsList>
+          <TabsContent value="resume" className="mt-8 max-w-[72ch]">
+            <h2 className="text-3xl font-semibold tracking-tight text-balance">
+              {t("experienceSummary")}
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              {t("experienceSummaryDescription")}
+            </p>
+            {document.metadata.experience_summary ? (
+              <article className="mt-10">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm, remarkMath]}
                   rehypePlugins={[rehypeKatex]}
                   components={markdownComponents}
                 >
-                  {document.content}
+                  {document.metadata.experience_summary}
                 </ReactMarkdown>
               </article>
-            </TabsContent>
-          </Tabs>
-        ) : (
-          <Empty className="min-h-72 border-t">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <UserRoundIcon />
-              </EmptyMedia>
-              <EmptyTitle>{t("profileArticleUnavailableTitle")}</EmptyTitle>
-              <EmptyDescription>
-                {t("profileArticleUnavailableDescription")}
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        )}
-      </div>
+            ) : document.metadata_status ? (
+              <Skeleton className="mt-8 h-48 w-full" />
+            ) : (
+              <p className="mt-8 text-sm leading-7 text-muted-foreground">
+                {t("experienceSummaryEmpty")}
+              </p>
+            )}
+          </TabsContent>
+          <TabsContent value="article" className="mt-8 max-w-[72ch]">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  {t("profileArticle")}
+                </p>
+                <h2
+                  id="profile-article-title"
+                  className="mt-2 text-3xl font-semibold tracking-tight text-balance"
+                >
+                  {document.title}
+                </h2>
+              </div>
+              <Badge variant="outline">{document.language}</Badge>
+            </div>
+            <p className="mt-3 text-sm text-muted-foreground">
+              {t("publishedOn").replace(
+                "{date}",
+                formatDate(document.published_at, locale)
+              )}
+            </p>
+            {document.is_translation_fallback ? (
+              <Alert className="mt-6">
+                <LanguagesIcon data-icon="inline-start" />
+                <AlertTitle>{t("translationInProgressTitle")}</AlertTitle>
+                <AlertDescription>
+                  {t("translationInProgress")}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            <article className="mt-10 max-w-[72ch]">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={markdownComponents}
+              >
+                {document.content}
+              </ReactMarkdown>
+            </article>
+          </TabsContent>
+        </Tabs>
+      ) : (
+        <Empty className="min-h-72 border-t">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <UserRoundIcon />
+            </EmptyMedia>
+            <EmptyTitle>{t("profileArticleUnavailableTitle")}</EmptyTitle>
+            <EmptyDescription>
+              {t("profileArticleUnavailableDescription")}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
     </main>
   )
 }
@@ -2645,6 +3274,19 @@ function formatDateTime(timestamp: number, locale: Locale) {
   }).format(new Date(timestamp * 1000))
 }
 
+function datetimeLocalValue(timestamp: number) {
+  const date = new Date(timestamp * 1_000)
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return local.toISOString().slice(0, 16)
+}
+
+function useBrowserTitle(title?: string) {
+  useEffect(() => {
+    if (!title) return
+    window.document.title = `${title} · CTX`
+  }, [title])
+}
+
 function formatBytes(bytes: number, locale: Locale) {
   const units = ["B", "KB", "MB", "GB", "TB"]
   let value = bytes
@@ -2674,13 +3316,24 @@ function pageTitle(
       | "pageTitleAdministration"
       | "pageTitleDocuments"
       | "pageTitleEditor"
+      | "pageTitleAiRequests"
       | "pageTitleSystemResources"
   ) => string
 ) {
   if (pathname === "/admin/system-resources")
     return t("pageTitleSystemResources")
+  if (pathname === "/admin/ai-requests") return t("pageTitleAiRequests")
   if (pathname === "/admin") return t("pageTitleAdministration")
   if (pathname.startsWith("/documents/") && pathname !== "/documents")
     return t("pageTitleEditor")
   return t("pageTitleDocuments")
+}
+
+function publicPageTitle(
+  pathname: string,
+  t: (key: "document" | "pageTitlePersonalPage" | "pageTitleSquare") => string
+) {
+  if (pathname.startsWith("/u/")) return t("pageTitlePersonalPage")
+  if (pathname.startsWith("/p/")) return t("document")
+  return t("pageTitleSquare")
 }
