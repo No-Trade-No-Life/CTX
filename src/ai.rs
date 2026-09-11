@@ -89,6 +89,8 @@ struct MetadataOutput {
     audience: String,
     #[serde(default)]
     experience_summary: String,
+    #[serde(default)]
+    personality_analysis: String,
 }
 
 pub async fn run(
@@ -218,13 +220,13 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
                     )
                     .map_err(|error| error.to_string())?;
             }
-            let resume_refresh = if document.document.kind == "profile" {
-                "; refreshed the experience resume from all published articles"
+            let profile_summary_refresh = if document.document.kind == "profile" {
+                "; refreshed the experience resume and personality analysis from all published articles"
             } else {
                 ""
             };
             Ok(format!(
-                "Metadata extracted; published source language is {source_language}{resume_refresh}"
+                "Metadata extracted; published source language is {source_language}{profile_summary_refresh}"
             ))
         }
         "translate" => {
@@ -308,6 +310,7 @@ fn metadata_from_output(output: &str) -> Result<DocumentMetadata, AiError> {
         key_points: output.key_points,
         audience: output.audience,
         experience_summary: output.experience_summary,
+        personality_analysis: output.personality_analysis,
     };
     if metadata.is_empty() {
         return Err(AiError::Response);
@@ -319,12 +322,12 @@ fn metadata_from_output(output: &str) -> Result<DocumentMetadata, AiError> {
 }
 
 fn metadata_instructions(document_kind: &str) -> String {
-    let resume_instruction = (document_kind == "profile").then_some(
-        "This is a personal profile document. The input includes the complete set of ordinary articles published by this author. Build experience_summary from all of those sources and the profile document, not from the profile document alone. experience_summary must be concise GitHub Flavored Markdown in a resume format. Use only sections supported by explicit facts, such as `### Overview`, `### Experience`, `### Projects`, and `### Milestones`. Use factual bullet points and dates only when stated. Do not use first person, emotional language, subjective evaluation, or speculation. Do not invent employers, roles, education, skills, chronology, or links. If no experience facts are stated anywhere, return an empty string.",
+    let profile_instructions = (document_kind == "profile").then_some(
+        "This is a personal profile document. The input includes the complete set of ordinary articles published by this author. Build experience_summary from all of those sources and the profile document, not from the profile document alone. experience_summary must be concise GitHub Flavored Markdown in a resume format. Use only sections supported by explicit facts, such as `### Overview`, `### Experience`, `### Projects`, and `### Milestones`. Use factual bullet points and dates only when stated. Do not use first person, emotional language, subjective evaluation, or speculation. Do not invent employers, roles, education, skills, chronology, or links. If no experience facts are stated anywhere, return an empty string. Also build personality_analysis from the same complete source set. personality_analysis must be concise GitHub Flavored Markdown for a public personal page. Start with a blockquote stating that it is an AI reading of published writing, not a clinical or diagnostic assessment. Then use only evidence-supported sections such as `### Writing patterns`, `### Values and priorities`, `### Decision and work style`, and `### Expression and collaboration`. For every substantive point, cite one or more of the supplied source article links. Describe observable patterns in the writing, not private facts about the author. Do not diagnose or assess mental health; do not infer conditions, trauma, unconscious motives, psychological defence mechanisms, cognitive functions, or risks. Do not assign a definitive personality type. Do not make claims about relationships or emotions unless the text explicitly states them. If the articles do not contain enough explicit material for a useful, evidence-supported analysis, return an empty string.",
     );
     format!(
-        "You are CTX's editorial metadata assistant. Extract structured metadata from Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences for an article list or RSS description), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), audience (a short description), and experience_summary (an empty string unless this is a personal profile document). Preserve the author's title; do not generate or change it. Summary is part of this metadata extraction; do not create a separate summary artifact. {}",
-        resume_instruction.unwrap_or_default()
+        "You are CTX's editorial metadata assistant. Extract structured metadata from Markdown without inventing facts, sources, or dates. Return JSON only with these fields: description (one sentence, at most 100 characters when practical), summary (one paragraph), short_summary (2-3 sentences for an article list or RSS description), tags (3-8 concise strings), inferred_date (YYYY-MM-DD or an empty string), inferred_lang (the document's original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES), key_points (3-5 concise strings), audience (a short description), experience_summary (an empty string unless this is a personal profile document), and personality_analysis (an empty string unless this is a personal profile document). Preserve the author's title; do not generate or change it. Summary is part of this metadata extraction; do not create a separate summary artifact. {}",
+        profile_instructions.unwrap_or_default()
     )
 }
 
@@ -343,9 +346,10 @@ fn metadata_input(document: &DocumentDetail, published_articles: &[PublishedArti
             .enumerate()
             .map(|(index, article)| {
                 format!(
-                    "## Published article {}\nTitle: {}\n\nMarkdown:\n{}",
+                    "## Published article {}\nSource title: {}\nSource link: #/p/{}\n\nMarkdown:\n{}",
                     index + 1,
                     article.title,
+                    article.id,
                     article.content
                 )
             })
@@ -360,7 +364,7 @@ fn metadata_input(document: &DocumentDetail, published_articles: &[PublishedArti
 
 fn translation_instructions(source_language: &str, target_language: &str) -> String {
     format!(
-        "You are CTX's Markdown translation assistant. Translate the title, complete GitHub Flavored Markdown document, and editorial metadata from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, task lists, tables, HTML, and frontmatter. For Mermaid fenced code blocks, preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators; translate only reader-facing labels, titles, and subgraph labels. Do not leave Mermaid labels in the source language. Do not change non-text elements or code. Translate description, summary, short_summary, tags, key_points, audience, and experience_summary in metadata; preserve inferred_date and set metadata.inferred_lang to {target_language}. When experience_summary is a Markdown resume, preserve its headings, list structure, emphasis, and factual wording. Use fluent, idiomatic language for a reader familiar with the subject. {} Return only a JSON object with string fields title and content and an object field metadata.",
+        "You are CTX's Markdown translation assistant. Translate the title, complete GitHub Flavored Markdown document, and editorial metadata from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, task lists, tables, HTML, and frontmatter. For Mermaid fenced code blocks, preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators; translate only reader-facing labels, titles, and subgraph labels. Do not leave Mermaid labels in the source language. Do not change non-text elements or code. Translate description, summary, short_summary, tags, key_points, audience, experience_summary, and personality_analysis in metadata; preserve inferred_date and set metadata.inferred_lang to {target_language}. When experience_summary is a Markdown resume or personality_analysis is a source-grounded reading, preserve its headings, list structure, evidence links, factual wording, and non-clinical disclaimer. Use fluent, idiomatic language for a reader familiar with the subject. {} Return only a JSON object with string fields title and content and an object field metadata.",
         japanese_translation_rules(target_language)
     )
 }
@@ -419,7 +423,7 @@ fn output_text_from_sse(sse: &str) -> Option<String> {
 
 fn system_prompt(task: &AiTask) -> String {
     match task {
-        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, audience, and experience_summary. Preserve the author's factual claims and do not invent sources. For a profile document, experience_summary must be a compact neutral summary of explicitly stated experience facts only, with no first person, subjective evaluation, emotion, or speculation. Return an empty experience_summary for other documents.".to_owned(),
+        AiTask::Metadata => "You are CTX's editorial metadata assistant. Return valid JSON only with description, summary, short_summary, tags, inferred_date, inferred_lang, key_points, audience, experience_summary, and personality_analysis. Preserve the author's factual claims and do not invent sources. For a profile document, experience_summary must be a compact neutral summary of explicitly stated experience facts only, with no first person, subjective evaluation, emotion, or speculation. personality_analysis must be a source-grounded, non-clinical reading of published writing, not a diagnosis or mental-health assessment. Return empty experience_summary and personality_analysis for other documents.".to_owned(),
         AiTask::DetectLanguage => "You are CTX's language detector. Read the document title and Markdown, then return only its original language as a canonical BCP 47 tag such as zh-CN, en-US, ja-JP, or es-ES. Do not add explanation, punctuation, or Markdown. If the language cannot be determined, return und.".to_owned(),
         AiTask::Polish => "You are CTX's Markdown editing assistant. Polish the complete document for clarity, flow, precision, and concise professional tone while preserving the author's facts, intent, and voice. Return only the revised GitHub Flavored Markdown. Preserve every Markdown structure and meaning: headings, links and URLs, inline code, code blocks, Mermaid syntax, images, task lists, tables, HTML, frontmatter, and formulas. Do not add sources, claims, or editorial commentary.".to_owned(),
     }
@@ -480,11 +484,15 @@ mod tests {
     #[test]
     fn requires_a_complete_structured_translation() {
         let translation = translation_from_output(
-            r##"{"title":"Translated title","content":"# Translated\n\n- [x] Done","metadata":{"description":"Translated description","summary":"Translated summary","short_summary":"Translated short summary","tags":["CTX"],"inferred_date":"","inferred_lang":"en-US","key_points":["Done"],"audience":"Readers"}}"##,
+            r##"{"title":"Translated title","content":"# Translated\n\n- [x] Done","metadata":{"description":"Translated description","summary":"Translated summary","short_summary":"Translated short summary","tags":["CTX"],"inferred_date":"","inferred_lang":"en-US","key_points":["Done"],"audience":"Readers","personality_analysis":"Writing patterns"}}"##,
         )
         .unwrap();
         assert_eq!(translation.title, "Translated title");
         assert_eq!(translation.content, "# Translated\n\n- [x] Done");
+        assert_eq!(
+            translation.metadata.personality_analysis,
+            "Writing patterns"
+        );
         assert!(translation_from_output(r#"{"title":"Only a title","content":""}"#).is_err());
         assert!(translation_from_output(r##"{"title":"No metadata","content":"# Content","metadata":{"inferred_lang":"en-US"}}"##).is_err());
         assert!(translation_from_output("not JSON").is_err());
@@ -500,6 +508,7 @@ mod tests {
         );
         assert!(instructions.contains("Do not leave Mermaid labels in the source language"));
         assert!(instructions.contains("experience_summary"));
+        assert!(instructions.contains("personality_analysis"));
         assert!(instructions.contains("です・ます"));
     }
 
@@ -514,7 +523,7 @@ mod tests {
     #[test]
     fn requires_structured_metadata_with_a_canonical_original_language() {
         let metadata = metadata_from_output(
-            r#"{"description":"A summary","inferred_lang":"ja-jp","tags":["CTX"],"experience_summary":"Worked on CTX documentation."}"#,
+            r###"{"description":"A summary","inferred_lang":"ja-jp","tags":["CTX"],"experience_summary":"Worked on CTX documentation.","personality_analysis":"## Writing patterns"}"###,
         )
         .unwrap();
         assert_eq!(metadata.inferred_language, "ja-JP");
@@ -522,17 +531,24 @@ mod tests {
             metadata.metadata.experience_summary,
             "Worked on CTX documentation."
         );
+        assert_eq!(
+            metadata.metadata.personality_analysis,
+            "## Writing patterns"
+        );
         assert!(metadata_from_output(r#"{"inferred_lang":"ja-JP"}"#).is_err());
         assert!(metadata_from_output(r#"{"description":"No language"}"#).is_err());
         assert!(metadata_from_output(r#"{"inferred_lang":"Japanese"}"#).is_err());
     }
 
     #[test]
-    fn profile_metadata_requires_an_all_article_resume() {
+    fn profile_metadata_requires_all_article_summaries() {
         let instructions = metadata_instructions("profile");
         assert!(instructions.contains("complete set of ordinary articles"));
         assert!(instructions.contains("resume format"));
         assert!(instructions.contains("GitHub Flavored Markdown"));
+        assert!(instructions.contains("personality_analysis"));
+        assert!(instructions.contains("not a clinical or diagnostic assessment"));
+        assert!(instructions.contains("supplied source article links"));
         assert!(metadata_instructions("article").contains("empty string unless"));
     }
 }

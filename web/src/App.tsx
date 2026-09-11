@@ -1598,6 +1598,7 @@ function publishedMetadata(value: Record<string, unknown>): PublishedMetadata {
     key_points: textList("key_points"),
     audience: strings("audience"),
     experience_summary: strings("experience_summary"),
+    personality_analysis: strings("personality_analysis"),
   }
 }
 
@@ -1610,7 +1611,8 @@ function hasEditorialMetadata(value: Record<string, unknown>) {
     metadata.tags.length ||
     metadata.key_points.length ||
     metadata.audience ||
-    metadata.experience_summary
+    metadata.experience_summary ||
+    metadata.personality_analysis
   )
 }
 
@@ -2286,7 +2288,21 @@ function PublicUserPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { locale, t } = useI18n()
-  useBrowserTitle(t("pageTitlePersonalPage"))
+  const activeTab =
+    searchParams.get("tab") === "article"
+      ? "article"
+      : searchParams.get("tab") === "personality"
+        ? "personality"
+        : "resume"
+  useBrowserTitle(
+    `${
+      activeTab === "resume"
+        ? t("experienceSummary")
+        : activeTab === "personality"
+          ? t("personalityAnalysis")
+          : t("profileArticle")
+    } — ${t("pageTitlePersonalPage")}`
+  )
   const { isReady, isAuthenticated, session } = useAuthMini()
   const profile = useQuery({
     queryKey: ["public-user-profile", ownerId, locale],
@@ -2319,8 +2335,6 @@ function PublicUserPage() {
     onSuccess: (detail) => navigate(`/documents/${detail.document.id}`),
     onError: showError,
   })
-  const activeTab = searchParams.get("tab") === "article" ? "article" : "resume"
-
   useEffect(() => {
     if (searchParams.get("tab") === activeTab) return
     const nextSearchParams = new URLSearchParams(searchParams)
@@ -2411,6 +2425,9 @@ function PublicUserPage() {
         >
           <TabsList aria-label={t("personalPage")}>
             <TabsTrigger value="resume">{t("profileTabResume")}</TabsTrigger>
+            <TabsTrigger value="personality">
+              {t("profileTabPersonality")}
+            </TabsTrigger>
             <TabsTrigger value="article">{t("profileTabArticle")}</TabsTrigger>
           </TabsList>
           <TabsContent value="resume" className="mt-8 max-w-[72ch]">
@@ -2435,6 +2452,34 @@ function PublicUserPage() {
             ) : (
               <p className="mt-8 text-sm leading-7 text-muted-foreground">
                 {t("experienceSummaryEmpty")}
+              </p>
+            )}
+          </TabsContent>
+          <TabsContent value="personality" className="mt-8 max-w-[72ch]">
+            <h2
+              id="personality-analysis-title"
+              className="text-3xl font-semibold tracking-tight text-balance"
+            >
+              {t("personalityAnalysis")}
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              {t("personalityAnalysisDescription")}
+            </p>
+            {document.metadata.personality_analysis ? (
+              <article className="mt-10">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[rehypeKatex]}
+                  components={markdownComponents}
+                >
+                  {document.metadata.personality_analysis}
+                </ReactMarkdown>
+              </article>
+            ) : document.metadata_status ? (
+              <Skeleton className="mt-8 h-64 w-full" />
+            ) : (
+              <p className="mt-8 text-sm leading-7 text-muted-foreground">
+                {t("personalityAnalysisEmpty")}
               </p>
             )}
           </TabsContent>

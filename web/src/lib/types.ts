@@ -59,6 +59,7 @@ export type PublishedMetadata = {
   key_points: string[]
   audience: string
   experience_summary: string
+  personality_analysis: string
 }
 
 export type PublicDocumentDetail = {

@@ -221,6 +221,8 @@ pub struct PublishedMetadata {
     pub audience: String,
     #[serde(default)]
     pub experience_summary: String,
+    #[serde(default)]
+    pub personality_analysis: String,
 }
 
 impl PublishedMetadata {
@@ -232,6 +234,7 @@ impl PublishedMetadata {
             && self.key_points.is_empty()
             && self.audience.is_empty()
             && self.experience_summary.is_empty()
+            && self.personality_analysis.is_empty()
     }
 }
 
@@ -340,6 +343,7 @@ struct PublishedDocument {
 
 #[derive(Clone, Debug)]
 pub struct PublishedArticle {
+    pub id: String,
     pub title: String,
     pub content: String,
 }
@@ -368,7 +372,7 @@ impl Database {
         connection.execute("DROP TABLE IF EXISTS author_language_preferences", [])?;
         backfill_published_source_languages(&connection)?;
         backfill_published_metadata_requests(&mut connection)?;
-        backfill_profile_resume_summaries(&mut connection)?;
+        backfill_profile_summaries(&mut connection)?;
         connection.execute(
             "INSERT INTO app_meta(key, value) VALUES ('ai_base_url', 'https://openai.ntnl.io/v1') ON CONFLICT(key) DO NOTHING",
             [],
@@ -901,7 +905,7 @@ impl Database {
     ) -> Result<Vec<PublishedArticle>, DatabaseError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT d.published_title, r.content FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.owner_id = ?1 AND d.document_kind = 'article' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_revision_id IS NOT NULL ORDER BY d.published_at, d.id",
+            "SELECT d.id, d.published_title, r.content FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.owner_id = ?1 AND d.document_kind = 'article' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_revision_id IS NOT NULL ORDER BY d.published_at, d.id",
         )?;
         Ok(statement
             .query_map([owner_id], published_article_from_row)?
@@ -1473,16 +1477,16 @@ fn backfill_published_metadata_requests(connection: &mut Connection) -> Result<(
     Ok(())
 }
 
-fn backfill_profile_resume_summaries(connection: &mut Connection) -> Result<(), DatabaseError> {
-    const PROFILE_RESUME_SUMMARY_VERSION: &str = "1";
+fn backfill_profile_summaries(connection: &mut Connection) -> Result<(), DatabaseError> {
+    const PROFILE_SUMMARY_VERSION: &str = "2";
     let version: Option<String> = connection
         .query_row(
-            "SELECT value FROM app_meta WHERE key = 'profile_resume_summary_version'",
+            "SELECT value FROM app_meta WHERE key = 'profile_summary_version'",
             [],
             |row| row.get(0),
         )
         .optional()?;
-    if version.as_deref() == Some(PROFILE_RESUME_SUMMARY_VERSION) {
+    if version.as_deref() == Some(PROFILE_SUMMARY_VERSION) {
         return Ok(());
     }
     let transaction = connection.transaction()?;
@@ -1507,8 +1511,8 @@ fn backfill_profile_resume_summaries(connection: &mut Connection) -> Result<(), 
         )?;
     }
     transaction.execute(
-        "INSERT INTO app_meta(key, value) VALUES ('profile_resume_summary_version', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [PROFILE_RESUME_SUMMARY_VERSION],
+        "INSERT INTO app_meta(key, value) VALUES ('profile_summary_version', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [PROFILE_SUMMARY_VERSION],
     )?;
     transaction.commit()?;
     Ok(())
@@ -1836,8 +1840,9 @@ fn published_document_from_row(row: &Row<'_>) -> rusqlite::Result<PublishedDocum
 
 fn published_article_from_row(row: &Row<'_>) -> rusqlite::Result<PublishedArticle> {
     Ok(PublishedArticle {
-        title: row.get(0)?,
-        content: row.get(1)?,
+        id: row.get(0)?,
+        title: row.get(1)?,
+        content: row.get(2)?,
     })
 }
 
@@ -1885,6 +1890,7 @@ mod tests {
             key_points: vec![description.to_owned()],
             audience: "Readers".to_owned(),
             experience_summary: String::new(),
+            personality_analysis: String::new(),
         }
     }
 
@@ -2146,6 +2152,7 @@ mod tests {
             .unwrap();
         let published_articles = database.published_articles_for_author("author-a").unwrap();
         assert_eq!(published_articles.len(), 1);
+        assert_eq!(published_articles[0].id, article.document.id);
         assert_eq!(published_articles[0].title, "An article");
         assert_eq!(published_articles[0].content, "# Article");
         assert_eq!(
@@ -2161,6 +2168,8 @@ mod tests {
         let mut profile_metadata = metadata("en-US", "Profile description");
         profile_metadata.experience_summary =
             "Software projects have been documented since 2023.".to_owned();
+        profile_metadata.personality_analysis =
+            "## Writing patterns\n\n- Builds software documentation from explicit project evidence.".to_owned();
         database
             .apply_published_metadata(
                 &profile.document.id,
@@ -2219,6 +2228,15 @@ mod tests {
                 .as_ref()
                 .map(|document| document.metadata.experience_summary.as_str()),
             Some("Software projects have been documented since 2023.")
+        );
+        assert_eq!(
+            public_profile
+                .profile
+                .as_ref()
+                .map(|document| document.metadata.personality_analysis.as_str()),
+            Some(
+                "## Writing patterns\n\n- Builds software documentation from explicit project evidence."
+            )
         );
     }
 
