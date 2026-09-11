@@ -45,6 +45,7 @@ import {
   useLocation,
   useNavigate,
   useParams,
+  useSearchParams,
 } from "react-router-dom"
 import { toast } from "sonner"
 
@@ -1629,6 +1630,7 @@ function PublicDocumentPage() {
 function PublicUserPage() {
   const { ownerId = "" } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { locale, t } = useI18n()
   const { isReady, isAuthenticated, session } = useAuthMini()
   const profile = useQuery({
@@ -1662,6 +1664,14 @@ function PublicUserPage() {
     onSuccess: (detail) => navigate(`/documents/${detail.document.id}`),
     onError: showError,
   })
+  const activeTab = searchParams.get("tab") === "article" ? "article" : "resume"
+
+  useEffect(() => {
+    if (searchParams.get("tab") === activeTab) return
+    const nextSearchParams = new URLSearchParams(searchParams)
+    nextSearchParams.set("tab", activeTab)
+    setSearchParams(nextSearchParams, { replace: true })
+  }, [activeTab, searchParams, setSearchParams])
 
   if (profile.isPending) return <LoadingPage />
   if (profile.error || !profile.data)
@@ -1740,33 +1750,47 @@ function PublicUserPage() {
           <PublicationHeatmap dates={profile.data.published_article_dates} />
         </section>
         {document ? (
-          <div className="grid gap-10 border-t pt-10 xl:grid-cols-[minmax(0,15rem)_minmax(0,1fr)] xl:gap-14">
-            <aside aria-labelledby="experience-summary-title">
-              <h2
-                id="experience-summary-title"
-                className="text-base font-semibold tracking-tight"
-              >
+          <Tabs
+            value={activeTab}
+            onValueChange={(tab) => {
+              const nextSearchParams = new URLSearchParams(searchParams)
+              nextSearchParams.set("tab", tab)
+              setSearchParams(nextSearchParams)
+            }}
+            className="border-t pt-10"
+          >
+            <TabsList aria-label={t("personalPage")}>
+              <TabsTrigger value="resume">{t("profileTabResume")}</TabsTrigger>
+              <TabsTrigger value="article">
+                {t("profileTabArticle")}
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="resume" className="mt-8 max-w-[72ch]">
+              <h2 className="text-3xl font-semibold tracking-tight text-balance">
                 {t("experienceSummary")}
               </h2>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              <p className="mt-3 text-sm leading-6 text-muted-foreground">
                 {t("experienceSummaryDescription")}
               </p>
               {document.metadata.experience_summary ? (
-                <p className="mt-5 text-sm leading-7 text-foreground/90">
-                  {document.metadata.experience_summary}
-                </p>
+                <article className="mt-10">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={markdownComponents}
+                  >
+                    {document.metadata.experience_summary}
+                  </ReactMarkdown>
+                </article>
               ) : document.metadata_status ? (
-                <Skeleton className="mt-5 h-24 w-full" />
+                <Skeleton className="mt-8 h-48 w-full" />
               ) : (
-                <p className="mt-5 text-sm leading-7 text-muted-foreground">
+                <p className="mt-8 text-sm leading-7 text-muted-foreground">
                   {t("experienceSummaryEmpty")}
                 </p>
               )}
-            </aside>
-            <section
-              aria-labelledby="profile-article-title"
-              className="min-w-0"
-            >
+            </TabsContent>
+            <TabsContent value="article" className="mt-8 max-w-[72ch]">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">
@@ -1805,8 +1829,8 @@ function PublicUserPage() {
                   {document.content}
                 </ReactMarkdown>
               </article>
-            </section>
-          </div>
+            </TabsContent>
+          </Tabs>
         ) : (
           <Empty className="min-h-72 border-t">
             <EmptyHeader>
