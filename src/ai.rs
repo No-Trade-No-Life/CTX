@@ -322,15 +322,11 @@ fn normalize_profile_summary_value(value: &mut Value, published_articles: &[Publ
             normalize_schwartz_values(values, published_articles),
         );
     }
-    if let Some(items) = object
-        .get_mut("daily_timeline")
-        .and_then(Value::as_array_mut)
-    {
-        for item in items {
-            if let Some(item) = item.as_object_mut() {
-                normalize_evidence(item, published_articles);
-            }
-        }
+    if let Some(entries) = object.remove("daily_timeline") {
+        object.insert(
+            "daily_timeline".to_owned(),
+            normalize_daily_timeline(entries, published_articles),
+        );
     }
 }
 
@@ -428,6 +424,28 @@ fn normalize_schwartz_values(value: Value, published_articles: &[PublishedArticl
         ),
         value => value,
     }
+}
+
+fn normalize_daily_timeline(value: Value, published_articles: &[PublishedArticle]) -> Value {
+    let Value::Array(mut entries) = value else {
+        return value;
+    };
+    for entry in &mut entries {
+        if let Some(entry) = entry.as_object_mut() {
+            if !entry.contains_key("summary")
+                && let Some(description) = entry.remove("description")
+            {
+                entry.insert("summary".to_owned(), description);
+            }
+            if let Some(evidence) = entry.get("evidence").cloned()
+                && !evidence.is_array()
+            {
+                entry.insert("evidence".to_owned(), Value::Array(vec![evidence]));
+            }
+            normalize_evidence(entry, published_articles);
+        }
+    }
+    Value::Array(entries)
 }
 
 fn json_value_from_output(output: &str) -> Result<Value, AiError> {
@@ -1398,6 +1416,33 @@ mod tests {
             self_direction.evidence[0].explanation,
             "Independent exploration."
         );
+    }
+
+    #[test]
+    fn normalizes_timeline_descriptions_and_object_evidence() {
+        let output = json!({"daily_timeline": [{
+            "date": "2025-08-10",
+            "description": "提出交易框架。",
+            "evidence": {"article_url": "#/p/article-1"}
+        }]});
+        let articles = [PublishedArticle {
+            id: "article-1".to_owned(),
+            title: "Source article".to_owned(),
+            content: String::new(),
+            inferred_date: String::new(),
+            published_date: String::new(),
+        }];
+        let patch = profile_summary_from_output_with_articles(
+            &output.to_string(),
+            "profile_timeline",
+            &articles,
+        )
+        .unwrap();
+        let ProfileSummaryPatch::Timeline(entries) = patch else {
+            panic!("expected timeline patch");
+        };
+        assert_eq!(entries[0].summary, "提出交易框架。");
+        assert_eq!(entries[0].evidence[0].article_title, "Source article");
     }
 
     #[test]
