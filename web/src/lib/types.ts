@@ -84,6 +84,22 @@ export type PublicUserProfile = {
   published_article_dates: number[]
 }
 
+export type PublicationTime = {
+  published_at: number | null
+}
+
+export type DocumentComment = {
+  id: string
+  document_id: string
+  author_id: string
+  language: string
+  content: string
+  quote: string | null
+  prefix: string | null
+  suffix: string | null
+  created_at: number
+}
+
 export type AiConfiguration = {
   base_url: string
   model: string

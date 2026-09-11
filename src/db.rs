@@ -76,6 +76,18 @@ const CURRENT_TABLES_SQL: &str = "
         completed_at INTEGER,
         UNIQUE(document_id, source_revision_id, task, target_language)
     );
+    CREATE TABLE IF NOT EXISTS document_comments (
+        id TEXT PRIMARY KEY NOT NULL,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        source_revision_id TEXT NOT NULL REFERENCES document_revisions(id) ON DELETE CASCADE,
+        author_id TEXT NOT NULL,
+        language TEXT NOT NULL,
+        content TEXT NOT NULL,
+        quote TEXT,
+        prefix TEXT,
+        suffix TEXT,
+        created_at INTEGER NOT NULL
+    );
 ";
 
 const CURRENT_INDEXES_SQL: &str = "
@@ -88,6 +100,7 @@ const CURRENT_INDEXES_SQL: &str = "
     CREATE INDEX IF NOT EXISTS document_metadata_document_idx ON document_metadata(document_id, language);
     CREATE INDEX IF NOT EXISTS ai_requests_status_idx ON ai_requests(status, created_at, id);
     CREATE INDEX IF NOT EXISTS ai_requests_document_idx ON ai_requests(document_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS document_comments_document_idx ON document_comments(document_id, source_revision_id, language, created_at, id);
 ";
 
 #[derive(Clone)]
@@ -263,6 +276,19 @@ pub struct AiRequest {
     pub completed_at: Option<i64>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DocumentComment {
+    pub id: String,
+    pub document_id: String,
+    pub author_id: String,
+    pub language: String,
+    pub content: String,
+    pub quote: Option<String>,
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SqlitePageUsage {
     pub page_size: u64,
@@ -288,6 +314,17 @@ pub struct DocumentSave<'a> {
     pub content: &'a str,
     pub message: &'a str,
     pub metadata: &'a Value,
+}
+
+#[derive(Debug)]
+pub struct NewDocumentComment<'a> {
+    pub document_id: &'a str,
+    pub author_id: &'a str,
+    pub language: &'a str,
+    pub content: &'a str,
+    pub quote: Option<&'a str>,
+    pub prefix: Option<&'a str>,
+    pub suffix: Option<&'a str>,
 }
 
 #[derive(Clone, Debug)]
@@ -541,6 +578,35 @@ impl Database {
             .map_err(DatabaseError::Sqlite)
     }
 
+    pub fn delete_document(&self, id: &str) -> Result<bool, DatabaseError> {
+        Ok(self
+            .connection()?
+            .execute("DELETE FROM documents WHERE id = ?1", [id])?
+            == 1)
+    }
+
+    pub fn publication_time(&self, id: &str) -> Result<Option<i64>, DatabaseError> {
+        self.connection()?
+            .query_row(
+                "SELECT published_at FROM documents WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(DatabaseError::Sqlite)
+    }
+
+    pub fn update_publication_time(
+        &self,
+        id: &str,
+        published_at: i64,
+    ) -> Result<Option<i64>, DatabaseError> {
+        let updated = self.connection()?.execute(
+            "UPDATE documents SET published_at = ?2 WHERE id = ?1",
+            params![id, published_at],
+        )?;
+        Ok((updated == 1).then_some(published_at))
+    }
+
     pub fn save_document(
         &self,
         input: &DocumentSave<'_>,
@@ -591,7 +657,7 @@ impl Database {
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         let updated = transaction.execute(
-            "UPDATE documents SET status = 'published', visibility = 'public', published_revision_id = ?2, published_title = title, published_at = ?3, source_language = ?4, published_source_language = ?4, updated_at = ?3 WHERE id = ?1 AND current_revision_id = ?2",
+            "UPDATE documents SET status = 'published', visibility = 'public', published_revision_id = ?2, published_title = title, published_at = COALESCE(published_at, ?3), source_language = ?4, published_source_language = ?4, updated_at = ?3 WHERE id = ?1 AND current_revision_id = ?2",
             params![id, source_revision_id, updated_at, source_language],
         )?;
         if updated == 0 {
@@ -742,6 +808,63 @@ impl Database {
             &publication,
             requested_language,
         )?))
+    }
+
+    pub fn public_comments(
+        &self,
+        document_id: &str,
+        language: &str,
+    ) -> Result<Vec<DocumentComment>, DatabaseError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT c.id, c.document_id, c.author_id, c.language, c.content, c.quote, c.prefix, c.suffix, c.created_at FROM document_comments c JOIN documents d ON d.id = c.document_id WHERE c.document_id = ?1 AND c.language = ?2 AND c.source_revision_id = d.published_revision_id AND d.document_kind = 'article' AND d.status = 'published' AND d.visibility = 'public' ORDER BY c.created_at, c.rowid",
+        )?;
+        Ok(statement
+            .query_map(params![document_id, language], document_comment_from_row)?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn create_public_comment(
+        &self,
+        input: &NewDocumentComment<'_>,
+    ) -> Result<Option<DocumentComment>, DatabaseError> {
+        let connection = self.connection()?;
+        let publication: Option<(String, String)> = connection
+            .query_row(
+                "SELECT published_revision_id, published_source_language FROM documents WHERE id = ?1 AND document_kind = 'article' AND status = 'published' AND visibility = 'public' AND published_revision_id IS NOT NULL AND published_source_language IS NOT NULL",
+                [input.document_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((source_revision_id, source_language)) = publication else {
+            return Ok(None);
+        };
+        if input.language != source_language
+            && !translation_exists(
+                &connection,
+                input.document_id,
+                &source_revision_id,
+                input.language,
+            )?
+        {
+            return Ok(None);
+        }
+        let comment = DocumentComment {
+            id: Uuid::new_v4().to_string(),
+            document_id: input.document_id.to_owned(),
+            author_id: input.author_id.to_owned(),
+            language: input.language.to_owned(),
+            content: input.content.to_owned(),
+            quote: input.quote.map(str::to_owned),
+            prefix: input.prefix.map(str::to_owned),
+            suffix: input.suffix.map(str::to_owned),
+            created_at: now(),
+        };
+        connection.execute(
+            "INSERT INTO document_comments(id, document_id, source_revision_id, author_id, language, content, quote, prefix, suffix, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![comment.id, comment.document_id, source_revision_id, comment.author_id, comment.language, comment.content, comment.quote, comment.prefix, comment.suffix, comment.created_at],
+        )?;
+        Ok(Some(comment))
     }
 
     pub fn public_user_profile(
@@ -1685,6 +1808,20 @@ fn document_detail_from_row(row: &Row<'_>) -> rusqlite::Result<DocumentDetail> {
     })
 }
 
+fn document_comment_from_row(row: &Row<'_>) -> rusqlite::Result<DocumentComment> {
+    Ok(DocumentComment {
+        id: row.get(0)?,
+        document_id: row.get(1)?,
+        author_id: row.get(2)?,
+        language: row.get(3)?,
+        content: row.get(4)?,
+        quote: row.get(5)?,
+        prefix: row.get(6)?,
+        suffix: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
 fn published_document_from_row(row: &Row<'_>) -> rusqlite::Result<PublishedDocument> {
     Ok(PublishedDocument {
         id: row.get(0)?,
@@ -1735,7 +1872,7 @@ mod tests {
     use rusqlite::{Connection, params};
     use serde_json::json;
 
-    use super::{Database, DocumentSave, NewDocument, PublishedMetadata};
+    use super::{Database, DocumentSave, NewDocument, NewDocumentComment, PublishedMetadata};
 
     fn metadata(language: &str, description: &str) -> PublishedMetadata {
         PublishedMetadata {
@@ -1828,6 +1965,132 @@ mod tests {
             "en-US"
         );
         assert_eq!(database.public_documents(None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn published_articles_accept_comments_and_keep_imported_publication_times() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let article = database
+            .create_document(&NewDocument {
+                author_id: "author-a",
+                title: "Commented article",
+                source_language: "zh-CN",
+                content: "# Article\n\nA selected passage.",
+                message: "Created document",
+            })
+            .unwrap();
+        assert_eq!(
+            database
+                .update_publication_time(&article.document.id, 1_704_067_200)
+                .unwrap(),
+            Some(1_704_067_200)
+        );
+        let published = database
+            .publish_document(&article.document.id, &article.revision.id)
+            .unwrap()
+            .unwrap();
+        let source_revision_id = published.published_revision_id.unwrap();
+        assert_eq!(
+            database
+                .public_document(&article.document.id, None)
+                .unwrap()
+                .unwrap()
+                .published_at,
+            1_704_067_200
+        );
+
+        assert_eq!(
+            database
+                .update_publication_time(&article.document.id, 1_704_153_600)
+                .unwrap(),
+            Some(1_704_153_600)
+        );
+        assert_eq!(
+            database.publication_time(&article.document.id).unwrap(),
+            Some(1_704_153_600)
+        );
+
+        let full_comment = database
+            .create_public_comment(&NewDocumentComment {
+                document_id: &article.document.id,
+                author_id: "reader-a",
+                language: "zh-CN",
+                content: "全文评论",
+                quote: None,
+                prefix: None,
+                suffix: None,
+            })
+            .unwrap()
+            .unwrap();
+        let inline_comment = database
+            .create_public_comment(&NewDocumentComment {
+                document_id: &article.document.id,
+                author_id: "reader-b",
+                language: "zh-CN",
+                content: "划线评论",
+                quote: Some("selected passage"),
+                prefix: Some("A "),
+                suffix: Some("."),
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            database
+                .public_comments(&article.document.id, "zh-CN")
+                .unwrap()
+                .into_iter()
+                .map(|comment| comment.id)
+                .collect::<Vec<_>>(),
+            vec![full_comment.id, inline_comment.id]
+        );
+
+        assert!(
+            database
+                .create_public_comment(&NewDocumentComment {
+                    document_id: &article.document.id,
+                    author_id: "reader-c",
+                    language: "en-US",
+                    content: "Unavailable translation",
+                    quote: None,
+                    prefix: None,
+                    suffix: None,
+                })
+                .unwrap()
+                .is_none()
+        );
+        database
+            .store_published_translation(
+                &article.document.id,
+                &source_revision_id,
+                "en-US",
+                "Commented article",
+                "# Article\n\nA selected passage.",
+                &metadata("en-US", "English metadata"),
+            )
+            .unwrap();
+        assert!(
+            database
+                .create_public_comment(&NewDocumentComment {
+                    document_id: &article.document.id,
+                    author_id: "reader-c",
+                    language: "en-US",
+                    content: "Translated article comment",
+                    quote: None,
+                    prefix: None,
+                    suffix: None,
+                })
+                .unwrap()
+                .is_some()
+        );
+
+        assert!(database.delete_document(&article.document.id).unwrap());
+        assert!(
+            database
+                .public_comments(&article.document.id, "zh-CN")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
