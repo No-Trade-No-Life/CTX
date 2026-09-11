@@ -60,6 +60,43 @@ export type PublishedMetadata = {
   audience: string
   experience_summary: string
   personality_analysis: string
+  mbti_analysis: MbtiAnalysis
+  schwartz_values: SchwartzValue[]
+  unconscious_motivations: string
+  philosophical_references: string
+  daily_timeline: DailyTimelineEntry[]
+}
+
+export type SummaryEvidence = {
+  article_title: string
+  article_url: string
+  explanation: string
+}
+
+export type MbtiDimension = {
+  axis: string
+  preference: string
+  confidence: string
+  evidence: SummaryEvidence[]
+}
+
+export type MbtiAnalysis = {
+  type_code: string
+  confidence: string
+  dimensions: MbtiDimension[]
+}
+
+export type SchwartzValue = {
+  key: string
+  score: number
+  rank: number
+  evidence: SummaryEvidence[]
+}
+
+export type DailyTimelineEntry = {
+  date: string
+  summary: string
+  evidence: SummaryEvidence[]
 }
 
 export type PublicDocumentDetail = {

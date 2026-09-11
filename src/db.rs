@@ -202,6 +202,60 @@ pub struct PublicUserProfile {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SummaryEvidence {
+    #[serde(default)]
+    pub article_title: String,
+    #[serde(default)]
+    pub article_url: String,
+    #[serde(default)]
+    pub explanation: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MbtiDimension {
+    #[serde(default)]
+    pub axis: String,
+    #[serde(default)]
+    pub preference: String,
+    #[serde(default)]
+    pub confidence: String,
+    #[serde(default)]
+    pub evidence: Vec<SummaryEvidence>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct MbtiAnalysis {
+    #[serde(default)]
+    pub type_code: String,
+    #[serde(default)]
+    pub confidence: String,
+    #[serde(default)]
+    pub dimensions: Vec<MbtiDimension>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SchwartzValue {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub score: u8,
+    #[serde(default)]
+    pub rank: u8,
+    #[serde(default)]
+    pub evidence: Vec<SummaryEvidence>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct DailyTimelineEntry {
+    #[serde(default)]
+    pub date: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub evidence: Vec<SummaryEvidence>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PublishedMetadata {
     #[serde(default)]
     pub description: String,
@@ -223,6 +277,16 @@ pub struct PublishedMetadata {
     pub experience_summary: String,
     #[serde(default)]
     pub personality_analysis: String,
+    #[serde(default)]
+    pub mbti_analysis: MbtiAnalysis,
+    #[serde(default)]
+    pub schwartz_values: Vec<SchwartzValue>,
+    #[serde(default)]
+    pub unconscious_motivations: String,
+    #[serde(default)]
+    pub philosophical_references: String,
+    #[serde(default)]
+    pub daily_timeline: Vec<DailyTimelineEntry>,
 }
 
 impl PublishedMetadata {
@@ -235,6 +299,11 @@ impl PublishedMetadata {
             && self.audience.is_empty()
             && self.experience_summary.is_empty()
             && self.personality_analysis.is_empty()
+            && self.mbti_analysis.type_code.is_empty()
+            && self.schwartz_values.is_empty()
+            && self.unconscious_motivations.is_empty()
+            && self.philosophical_references.is_empty()
+            && self.daily_timeline.is_empty()
     }
 }
 
@@ -346,6 +415,8 @@ pub struct PublishedArticle {
     pub id: String,
     pub title: String,
     pub content: String,
+    pub inferred_date: String,
+    pub published_date: String,
 }
 
 impl Database {
@@ -905,7 +976,7 @@ impl Database {
     ) -> Result<Vec<PublishedArticle>, DatabaseError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT d.id, d.published_title, r.content FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.owner_id = ?1 AND d.document_kind = 'article' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_revision_id IS NOT NULL ORDER BY d.published_at, d.id",
+            "SELECT d.id, d.published_title, r.content, COALESCE(m.metadata_json, ''), strftime('%Y-%m-%d', d.published_at, 'unixepoch') FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id LEFT JOIN document_metadata m ON m.document_id = d.id AND m.source_revision_id = d.published_revision_id AND m.language = d.published_source_language WHERE d.owner_id = ?1 AND d.document_kind = 'article' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_revision_id IS NOT NULL ORDER BY d.published_at, d.id",
         )?;
         Ok(statement
             .query_map([owner_id], published_article_from_row)?
@@ -1478,7 +1549,7 @@ fn backfill_published_metadata_requests(connection: &mut Connection) -> Result<(
 }
 
 fn backfill_profile_summaries(connection: &mut Connection) -> Result<(), DatabaseError> {
-    const PROFILE_SUMMARY_VERSION: &str = "2";
+    const PROFILE_SUMMARY_VERSION: &str = "3";
     let version: Option<String> = connection
         .query_row(
             "SELECT value FROM app_meta WHERE key = 'profile_summary_version'",
@@ -1843,6 +1914,8 @@ fn published_article_from_row(row: &Row<'_>) -> rusqlite::Result<PublishedArticl
         id: row.get(0)?,
         title: row.get(1)?,
         content: row.get(2)?,
+        inferred_date: metadata_from_json(&row.get::<_, String>(3)?).inferred_date,
+        published_date: row.get(4)?,
     })
 }
 
@@ -1891,6 +1964,11 @@ mod tests {
             audience: "Readers".to_owned(),
             experience_summary: String::new(),
             personality_analysis: String::new(),
+            mbti_analysis: Default::default(),
+            schwartz_values: vec![],
+            unconscious_motivations: String::new(),
+            philosophical_references: String::new(),
+            daily_timeline: vec![],
         }
     }
 
@@ -2155,6 +2233,7 @@ mod tests {
         assert_eq!(published_articles[0].id, article.document.id);
         assert_eq!(published_articles[0].title, "An article");
         assert_eq!(published_articles[0].content, "# Article");
+        assert!(!published_articles[0].published_date.is_empty());
         assert_eq!(
             database
                 .ai_requests()
