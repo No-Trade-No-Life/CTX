@@ -174,13 +174,15 @@ async fn extract_profile_summary(
     let instructions = profile_summary_instructions(task).ok_or(AiError::Response)?;
     let input = metadata_input(document, published_articles);
     let output = request_output(credentials, &instructions, &input).await?;
-    profile_summary_from_output(&output, task).map_err(|error| match error {
-        AiError::Response => AiError::Rejected(format!(
-            "profile summary {task} response was not accepted ({} bytes): {}",
-            output.len(),
-            response_preview(&output)
-        )),
-        error => error,
+    profile_summary_from_output_with_articles(&output, task, published_articles).map_err(|error| {
+        match error {
+            AiError::Response => AiError::Rejected(format!(
+                "profile summary {task} response was not accepted ({} bytes): {}",
+                output.len(),
+                response_preview(&output)
+            )),
+            error => error,
+        }
     })
 }
 
@@ -193,8 +195,18 @@ fn response_preview(output: &str) -> String {
     preview
 }
 
+#[cfg(test)]
 fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummaryPatch, AiError> {
-    let value = json_value_from_output(output)?;
+    profile_summary_from_output_with_articles(output, task, &[])
+}
+
+fn profile_summary_from_output_with_articles(
+    output: &str,
+    task: &str,
+    published_articles: &[PublishedArticle],
+) -> Result<ProfileSummaryPatch, AiError> {
+    let mut value = json_value_from_output(output)?;
+    normalize_profile_summary_value(&mut value, published_articles);
     match task {
         "profile_experience"
         | "profile_personality"
@@ -273,6 +285,110 @@ fn profile_summary_from_output(output: &str, task: &str) -> Result<ProfileSummar
             Ok(ProfileSummaryPatch::Timeline(entries))
         }
         _ => Err(AiError::Response),
+    }
+}
+
+fn normalize_profile_summary_value(value: &mut Value, published_articles: &[PublishedArticle]) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    normalize_confidence(object, "confidence");
+    if let Some(dimensions) = object
+        .get_mut("mbti_analysis")
+        .and_then(Value::as_object_mut)
+    {
+        normalize_confidence(dimensions, "confidence");
+        if let Some(items) = dimensions
+            .get_mut("dimensions")
+            .and_then(Value::as_array_mut)
+        {
+            for item in items {
+                let Some(item) = item.as_object_mut() else {
+                    continue;
+                };
+                if !item.contains_key("axis")
+                    && let Some(axis) = item.remove("dimension")
+                {
+                    item.insert("axis".to_owned(), axis);
+                }
+                normalize_confidence(item, "confidence");
+                normalize_evidence(item, published_articles);
+            }
+        }
+    }
+    if let Some(items) = object
+        .get_mut("schwartz_values")
+        .and_then(Value::as_array_mut)
+    {
+        for item in items {
+            if let Some(item) = item.as_object_mut() {
+                normalize_evidence(item, published_articles);
+            }
+        }
+    }
+    if let Some(items) = object
+        .get_mut("daily_timeline")
+        .and_then(Value::as_array_mut)
+    {
+        for item in items {
+            if let Some(item) = item.as_object_mut() {
+                normalize_evidence(item, published_articles);
+            }
+        }
+    }
+}
+
+fn normalize_confidence(object: &mut serde_json::Map<String, Value>, field: &str) {
+    let Some(value) = object.get(field).cloned() else {
+        return;
+    };
+    let confidence = value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
+        .map(confidence_label);
+    if let Some(confidence) = confidence {
+        object.insert(field.to_owned(), Value::String(confidence.to_owned()));
+    }
+}
+
+fn confidence_label(value: f64) -> &'static str {
+    if value >= 0.8 {
+        "high"
+    } else if value >= 0.5 {
+        "medium"
+    } else if value > 0.0 {
+        "low"
+    } else {
+        "undetermined"
+    }
+}
+
+fn normalize_evidence(
+    object: &mut serde_json::Map<String, Value>,
+    published_articles: &[PublishedArticle],
+) {
+    let Some(items) = object.get_mut("evidence").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in items {
+        let Some(item) = item.as_object_mut() else {
+            continue;
+        };
+        if !item.contains_key("explanation")
+            && let Some(observation) = item.remove("observation")
+        {
+            item.insert("explanation".to_owned(), observation);
+        }
+        if !item.contains_key("article_title") {
+            let title = item
+                .get("article_url")
+                .and_then(Value::as_str)
+                .and_then(|url| url.strip_prefix("#/p/"))
+                .and_then(|id| published_articles.iter().find(|article| article.id == id))
+                .map(|article| article.title.clone())
+                .unwrap_or_else(|| "Source article".to_owned());
+            item.insert("article_title".to_owned(), Value::String(title));
+        }
     }
 }
 
@@ -797,7 +913,7 @@ fn profile_summary_instructions(task: &str) -> Option<String> {
         _ => " Return only the compact JSON object and keep Markdown concise.",
     };
     Some(format!(
-        "You are CTX's independent editorial corpus-analysis assistant. Read the profile document and the complete set of the author's published ordinary articles supplied in the input. Generate only {output_shape}. Use only explicit facts from those sources; every evidence article_url must exactly match a supplied #/p/... link. Return JSON only with exactly the requested field. An empty Markdown string or empty timeline is valid when the sources do not support a conclusion. Do not add a Markdown code fence or commentary.{constraints}"
+        "You are CTX's independent editorial corpus-analysis assistant. Read the profile document and the complete set of the author's published ordinary articles supplied in the input. Generate only {output_shape}. Use only explicit facts from those sources; every evidence item must have article_title, article_url, and explanation, and article_url must exactly match a supplied #/p/... link. MBTI confidence fields must be one of high, medium, low, or undetermined. Return JSON only with exactly the requested field. An empty Markdown string or empty timeline is valid when the sources do not support a conclusion. Do not add a Markdown code fence or commentary.{constraints}"
     ))
 }
 
@@ -928,10 +1044,12 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AiTask, metadata_from_output, metadata_instructions, output_text_from_sse,
-        profile_summary_from_output, profile_summary_instructions, request_body, system_prompt,
-        translation_from_output, translation_instructions,
+        AiTask, ProfileSummaryPatch, metadata_from_output, metadata_instructions,
+        output_text_from_sse, profile_summary_from_output,
+        profile_summary_from_output_with_articles, profile_summary_instructions, request_body,
+        system_prompt, translation_from_output, translation_instructions,
     };
+    use crate::db::PublishedArticle;
 
     fn complete_profile_metadata() -> Value {
         let evidence = json!({
@@ -1156,6 +1274,48 @@ mod tests {
             .is_ok()
         );
         assert!(profile_summary_from_output("{}", "profile_mbti").is_err());
+    }
+
+    #[test]
+    fn normalizes_common_profile_response_aliases() {
+        let output = json!({
+            "mbti_analysis": {
+                "type_code": "INTJ",
+                "confidence": 0.76,
+                "dimensions": [
+                    {"dimension": "I/E", "preference": "I", "confidence": 0.62, "evidence": [{"article_url": "#/p/article-1", "observation": "Observed pattern."}]},
+                    {"dimension": "N/S", "preference": "N", "confidence": 0.62, "evidence": [{"article_url": "#/p/article-1", "observation": "Observed pattern."}]},
+                    {"dimension": "T/F", "preference": "T", "confidence": 0.62, "evidence": [{"article_url": "#/p/article-1", "observation": "Observed pattern."}]},
+                    {"dimension": "J/P", "preference": "J", "confidence": 0.62, "evidence": [{"article_url": "#/p/article-1", "observation": "Observed pattern."}]}
+                ]
+            }
+        });
+        let articles = [PublishedArticle {
+            id: "article-1".to_owned(),
+            title: "Source article".to_owned(),
+            content: String::new(),
+            inferred_date: String::new(),
+            published_date: String::new(),
+        }];
+        let patch = profile_summary_from_output_with_articles(
+            &output.to_string(),
+            "profile_mbti",
+            &articles,
+        )
+        .unwrap();
+        let ProfileSummaryPatch::Mbti(analysis) = patch else {
+            panic!("expected MBTI patch");
+        };
+        assert_eq!(analysis.confidence, "medium");
+        assert_eq!(analysis.dimensions[0].axis, "I/E");
+        assert_eq!(
+            analysis.dimensions[0].evidence[0].article_title,
+            "Source article"
+        );
+        assert_eq!(
+            analysis.dimensions[0].evidence[0].explanation,
+            "Observed pattern."
+        );
     }
 
     #[test]
