@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type ClipboardEvent,
   type ReactNode,
 } from "react"
 import { createPortal } from "react-dom"
@@ -37,6 +38,7 @@ import {
   ListChecksIcon,
   ListIcon,
   ListOrderedIcon,
+  LoaderCircleIcon,
   MinusIcon,
   PilcrowIcon,
   QuoteIcon,
@@ -65,6 +67,7 @@ type MarkdownEditorProps = {
   value: string
   disabled?: boolean
   onChange: (value: string) => void
+  onImageUpload: (image: File) => Promise<string>
   documentReferences?: DocumentReference[]
   currentDocumentId?: string
   writeLabel: string
@@ -74,6 +77,8 @@ type MarkdownEditorProps = {
   insertLinkLabel: string
   insertDocumentLinkLabel: string
   insertImageLabel: string
+  imageUploadingLabel: string
+  imageUploadFailedLabel: string
   insertUrlLabel: string
   insertLabel: string
   cancelLabel: string
@@ -226,10 +231,19 @@ function ToolbarSeparator() {
   return <span aria-hidden="true" className="mx-0.5 h-5 w-px bg-border" />
 }
 
+function imageFromClipboard(clipboard: DataTransfer): File | null {
+  return (
+    Array.from(clipboard.items)
+      .find((item) => item.kind === "file" && item.type.startsWith("image/"))
+      ?.getAsFile() ?? null
+  )
+}
+
 export function MarkdownEditor({
   value,
   disabled = false,
   onChange,
+  onImageUpload,
   documentReferences = [],
   currentDocumentId,
   writeLabel,
@@ -239,6 +253,8 @@ export function MarkdownEditor({
   insertLinkLabel,
   insertDocumentLinkLabel,
   insertImageLabel,
+  imageUploadingLabel,
+  imageUploadFailedLabel,
   insertUrlLabel,
   insertLabel,
   cancelLabel,
@@ -252,6 +268,8 @@ export function MarkdownEditor({
   const [isDocumentPickerOpen, setIsDocumentPickerOpen] = useState(false)
   const [documentQuery, setDocumentQuery] = useState("")
   const [slashMenu, setSlashMenu] = useState<SlashMenu | null>(null)
+  const [imageUploadCount, setImageUploadCount] = useState(0)
+  const [imageUploadFailed, setImageUploadFailed] = useState(false)
   const editor = useEditor(
     {
       extensions: [
@@ -411,6 +429,50 @@ export function MarkdownEditor({
     setDocumentQuery("")
     setIsDocumentPickerOpen(false)
   }
+
+  const uploadClipboardImage = useCallback(
+    (image: File, onUploaded: (url: string) => void) => {
+      setImageUploadFailed(false)
+      setImageUploadCount((count) => count + 1)
+      void onImageUpload(image)
+        .then(onUploaded)
+        .catch(() => setImageUploadFailed(true))
+        .finally(() => setImageUploadCount((count) => count - 1))
+    },
+    [onImageUpload]
+  )
+
+  const pasteImageInEditor = useCallback(
+    (event: ClipboardEvent<HTMLDivElement>) => {
+      const image = imageFromClipboard(event.clipboardData)
+      if (!editor || !image || disabled) return
+      const { from, to } = editor.state.selection
+      event.preventDefault()
+      uploadClipboardImage(image, (url) => {
+        editor
+          .chain()
+          .focus()
+          .insertContentAt({ from, to }, { type: "image", attrs: { src: url, alt: "" } })
+          .run()
+      })
+    },
+    [disabled, editor, uploadClipboardImage]
+  )
+
+  const pasteImageInMarkdown = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      const image = imageFromClipboard(event.clipboardData)
+      if (!image || disabled) return
+      const { selectionEnd, selectionStart } = event.currentTarget
+      event.preventDefault()
+      uploadClipboardImage(image, (url) => {
+        onChange(
+          `${value.slice(0, selectionStart)}![](${url})${value.slice(selectionEnd)}`
+        )
+      })
+    },
+    [disabled, onChange, uploadClipboardImage, value]
+  )
 
   const openEmbedForm = (kind: EmbedKind) => {
     setIsDocumentPickerOpen(false)
@@ -577,6 +639,11 @@ export function MarkdownEditor({
           </EditorButton>
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1 border-l pl-2">
+          {imageUploadCount > 0 ? (
+            <span role="status" aria-label={imageUploadingLabel} title={imageUploadingLabel}>
+              <LoaderCircleIcon className="size-3.5 animate-spin" />
+            </span>
+          ) : null}
           <Button
             type="button"
             size="sm"
@@ -597,6 +664,12 @@ export function MarkdownEditor({
           </Button>
         </div>
       </div>
+
+      {imageUploadFailed ? (
+        <p role="alert" className="border-b bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          {imageUploadFailedLabel}
+        </p>
+      ) : null}
 
       {embedKind ? (
         <div className="markdown-editor__embed-form">
@@ -690,7 +763,11 @@ export function MarkdownEditor({
 
       {mode === "write" ? (
         <>
-          <EditorContent editor={editor} className="markdown-editor__canvas" />
+          <EditorContent
+            editor={editor}
+            className="markdown-editor__canvas"
+            onPaste={pasteImageInEditor}
+          />
           <BubbleMenu
             editor={editor}
             shouldShow={({ state }) => !state.selection.empty}
@@ -777,6 +854,7 @@ export function MarkdownEditor({
           value={value}
           disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
+          onPaste={pasteImageInMarkdown}
         />
       )}
     </div>

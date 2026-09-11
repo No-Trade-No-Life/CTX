@@ -12,3 +12,24 @@ export async function request<T>(
   if (!response.ok) throw new Error(body.error ?? "Request failed")
   return body
 }
+
+export async function upload<T>(
+  path: string,
+  content: Blob,
+  accessToken: string
+): Promise<T> {
+  const headers = new Headers({
+    "Content-Type": content.type || "application/octet-stream",
+    Authorization: `Bearer ${accessToken}`,
+  })
+  const response = await fetch(path, {
+    method: "POST",
+    headers,
+    body: content,
+  })
+  const body = (await response.json().catch(() => ({}))) as T & {
+    error?: string
+  }
+  if (!response.ok) throw new Error(body.error ?? "Image upload failed")
+  return body
+}

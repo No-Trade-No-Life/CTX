@@ -33,6 +33,11 @@ export type DocumentDetail = {
   revision: DocumentRevision
 }
 
+export type MediaUpload = {
+  id: string
+  url: string
+}
+
 export type PublicDocument = {
   id: string
   owner_id: string
