@@ -173,6 +173,7 @@ export type AiRequest = {
   status: "queued" | "running" | "succeeded" | "failed"
   result_summary: string | null
   error: string | null
+  openai_lb_request_id: string | null
   created_at: number
   started_at: number | null
   completed_at: number | null

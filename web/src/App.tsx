@@ -3545,7 +3545,7 @@ function AiRequestAuditPage({ token }: { token: string }) {
         </Empty>
       ) : (
         <div className="overflow-x-auto rounded-md border">
-          <table className="w-full min-w-[920px] text-left text-sm">
+          <table className="w-full min-w-[1120px] text-left text-sm">
             <thead className="bg-muted/50 text-xs text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 font-medium">
@@ -3563,6 +3563,9 @@ function AiRequestAuditPage({ token }: { token: string }) {
                 </th>
                 <th className="px-4 py-3 font-medium">
                   {t("aiRequestCompleted")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("aiRequestOpenAiLbRequestId")}
                 </th>
                 <th className="px-4 py-3 font-medium">
                   {t("aiRequestResult")}
@@ -3603,6 +3606,14 @@ function AiRequestAuditPage({ token }: { token: string }) {
                     {item.completed_at
                       ? formatDate(item.completed_at, locale)
                       : "—"}
+                  </td>
+                  <td className="max-w-72 px-4 py-3 font-mono text-xs text-muted-foreground">
+                    <p
+                      className="truncate"
+                      title={item.openai_lb_request_id ?? ""}
+                    >
+                      {item.openai_lb_request_id ?? "—"}
+                    </p>
                   </td>
                   <td className="max-w-96 px-4 py-3 text-muted-foreground">
                     <p
