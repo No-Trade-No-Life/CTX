@@ -71,6 +71,7 @@ const CURRENT_TABLES_SQL: &str = "
         status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
         result_summary TEXT,
         error TEXT,
+        openai_lb_request_id TEXT,
         created_at INTEGER NOT NULL,
         started_at INTEGER,
         completed_at INTEGER,
@@ -343,6 +344,7 @@ pub struct AiRequest {
     pub status: String,
     pub result_summary: Option<String>,
     pub error: Option<String>,
+    pub openai_lb_request_id: Option<String>,
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
@@ -450,6 +452,7 @@ impl Database {
         add_direct_document_columns_if_needed(&connection)?;
         connection.execute_batch(CURRENT_TABLES_SQL)?;
         migrate_ai_request_task_constraint(&mut connection)?;
+        add_ai_request_openai_lb_request_id_if_needed(&connection)?;
         connection.execute_batch(CURRENT_INDEXES_SQL)?;
         connection.execute("DROP TABLE IF EXISTS author_language_preferences", [])?;
         backfill_published_source_languages(&connection)?;
@@ -902,7 +905,7 @@ impl Database {
 
     pub fn requeue_running_ai_requests(&self) -> Result<(), DatabaseError> {
         self.connection()?.execute(
-            "UPDATE ai_requests SET status = 'queued', started_at = NULL WHERE status = 'running'",
+            "UPDATE ai_requests SET status = 'queued', started_at = NULL, openai_lb_request_id = NULL WHERE status = 'running'",
             [],
         )?;
         Ok(())
@@ -910,7 +913,7 @@ impl Database {
 
     pub fn requeue_failed_ai_requests(&self) -> Result<(), DatabaseError> {
         self.connection()?.execute(
-            "UPDATE ai_requests SET status = 'queued', result_summary = NULL, error = NULL, started_at = NULL, completed_at = NULL WHERE status = 'failed'",
+            "UPDATE ai_requests SET status = 'queued', result_summary = NULL, error = NULL, openai_lb_request_id = NULL, started_at = NULL, completed_at = NULL WHERE status = 'failed'",
             [],
         )?;
         Ok(())
@@ -932,11 +935,11 @@ impl Database {
         };
         let started_at = now();
         transaction.execute(
-            "UPDATE ai_requests SET status = 'running', started_at = ?2, completed_at = NULL, result_summary = NULL, error = NULL WHERE id = ?1 AND status = 'queued'",
+            "UPDATE ai_requests SET status = 'running', started_at = ?2, completed_at = NULL, result_summary = NULL, error = NULL, openai_lb_request_id = NULL WHERE id = ?1 AND status = 'queued'",
             params![request_id, started_at],
         )?;
         let request = transaction.query_row(
-            "SELECT r.id, r.document_id, COALESCE(d.published_title, d.title), r.source_revision_id, r.task, r.target_language, r.status, r.result_summary, r.error, r.created_at, r.started_at, r.completed_at FROM ai_requests r JOIN documents d ON d.id = r.document_id WHERE r.id = ?1",
+            "SELECT r.id, r.document_id, COALESCE(d.published_title, d.title), r.source_revision_id, r.task, r.target_language, r.status, r.result_summary, r.error, r.openai_lb_request_id, r.created_at, r.started_at, r.completed_at FROM ai_requests r JOIN documents d ON d.id = r.document_id WHERE r.id = ?1",
             [request_id],
             ai_request_from_row,
         )?;
@@ -944,18 +947,28 @@ impl Database {
         Ok(Some(request))
     }
 
-    pub fn complete_ai_request(&self, id: &str, summary: &str) -> Result<(), DatabaseError> {
+    pub fn complete_ai_request(
+        &self,
+        id: &str,
+        summary: &str,
+        openai_lb_request_id: Option<&str>,
+    ) -> Result<(), DatabaseError> {
         self.connection()?.execute(
-            "UPDATE ai_requests SET status = 'succeeded', result_summary = ?2, error = NULL, completed_at = ?3 WHERE id = ?1",
-            params![id, summary, now()],
+            "UPDATE ai_requests SET status = 'succeeded', result_summary = ?2, error = NULL, openai_lb_request_id = ?3, completed_at = ?4 WHERE id = ?1",
+            params![id, summary, openai_lb_request_id, now()],
         )?;
         Ok(())
     }
 
-    pub fn fail_ai_request(&self, id: &str, error: &str) -> Result<(), DatabaseError> {
+    pub fn fail_ai_request(
+        &self,
+        id: &str,
+        error: &str,
+        openai_lb_request_id: Option<&str>,
+    ) -> Result<(), DatabaseError> {
         self.connection()?.execute(
-            "UPDATE ai_requests SET status = 'failed', result_summary = NULL, error = ?2, completed_at = ?3 WHERE id = ?1",
-            params![id, error, now()],
+            "UPDATE ai_requests SET status = 'failed', result_summary = NULL, error = ?2, openai_lb_request_id = ?3, completed_at = ?4 WHERE id = ?1",
+            params![id, error, openai_lb_request_id, now()],
         )?;
         Ok(())
     }
@@ -963,7 +976,7 @@ impl Database {
     pub fn ai_requests(&self) -> Result<Vec<AiRequest>, DatabaseError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT r.id, r.document_id, COALESCE(d.published_title, d.title), r.source_revision_id, r.task, r.target_language, r.status, r.result_summary, r.error, r.created_at, r.started_at, r.completed_at FROM ai_requests r JOIN documents d ON d.id = r.document_id ORDER BY r.created_at DESC, r.id DESC LIMIT 200",
+            "SELECT r.id, r.document_id, COALESCE(d.published_title, d.title), r.source_revision_id, r.task, r.target_language, r.status, r.result_summary, r.error, r.openai_lb_request_id, r.created_at, r.started_at, r.completed_at FROM ai_requests r JOIN documents d ON d.id = r.document_id ORDER BY r.created_at DESC, r.id DESC LIMIT 200",
         )?;
         Ok(statement
             .query_map([], ai_request_from_row)?
@@ -1147,7 +1160,7 @@ impl Database {
             return Ok(Some("succeeded".to_owned()));
         }
         connection.execute(
-            "INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, created_at) VALUES (?1, ?2, ?3, 'translate', ?4, 'queued', ?5) ON CONFLICT(document_id, source_revision_id, task, target_language) DO UPDATE SET status = 'queued', result_summary = NULL, error = NULL, started_at = NULL, completed_at = NULL WHERE ai_requests.status IN ('failed', 'succeeded')",
+            "INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, created_at) VALUES (?1, ?2, ?3, 'translate', ?4, 'queued', ?5) ON CONFLICT(document_id, source_revision_id, task, target_language) DO UPDATE SET status = 'queued', result_summary = NULL, error = NULL, openai_lb_request_id = NULL, started_at = NULL, completed_at = NULL WHERE ai_requests.status IN ('failed', 'succeeded')",
             params![Uuid::new_v4().to_string(), document_id, source_revision_id, target_language, now()],
         )?;
         ai_request_status_on(
@@ -1348,7 +1361,7 @@ fn enqueue_ai_request(
     created_at: i64,
 ) -> Result<(), DatabaseError> {
     transaction.execute(
-        "INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6) ON CONFLICT(document_id, source_revision_id, task, target_language) DO UPDATE SET status = 'queued', result_summary = NULL, error = NULL, started_at = NULL, completed_at = NULL WHERE ai_requests.status = 'failed'",
+        "INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6) ON CONFLICT(document_id, source_revision_id, task, target_language) DO UPDATE SET status = 'queued', result_summary = NULL, error = NULL, openai_lb_request_id = NULL, started_at = NULL, completed_at = NULL WHERE ai_requests.status = 'failed'",
         params![Uuid::new_v4().to_string(), document_id, source_revision_id, task, target_language, created_at],
     )?;
     Ok(())
@@ -1363,7 +1376,7 @@ fn force_enqueue_ai_request(
     created_at: i64,
 ) -> Result<(), DatabaseError> {
     transaction.execute(
-        "INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6) ON CONFLICT(document_id, source_revision_id, task, target_language) DO UPDATE SET status = 'queued', result_summary = NULL, error = NULL, started_at = NULL, completed_at = NULL WHERE ai_requests.status != 'running'",
+        "INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6) ON CONFLICT(document_id, source_revision_id, task, target_language) DO UPDATE SET status = 'queued', result_summary = NULL, error = NULL, openai_lb_request_id = NULL, started_at = NULL, completed_at = NULL WHERE ai_requests.status != 'running'",
         params![Uuid::new_v4().to_string(), document_id, source_revision_id, task, target_language, created_at],
     )?;
     Ok(())
@@ -1787,6 +1800,7 @@ fn migrate_ai_request_task_constraint(connection: &mut Connection) -> Result<(),
              status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
              result_summary TEXT,
              error TEXT,
+             openai_lb_request_id TEXT,
              created_at INTEGER NOT NULL,
              started_at INTEGER,
              completed_at INTEGER,
@@ -1798,6 +1812,19 @@ fn migrate_ai_request_task_constraint(connection: &mut Connection) -> Result<(),
          DROP TABLE ai_requests_legacy;",
     )?;
     transaction.commit()?;
+    Ok(())
+}
+
+fn add_ai_request_openai_lb_request_id_if_needed(
+    connection: &Connection,
+) -> Result<(), DatabaseError> {
+    if table_has_column(connection, "ai_requests", "openai_lb_request_id")? {
+        return Ok(());
+    }
+    connection.execute(
+        "ALTER TABLE ai_requests ADD COLUMN openai_lb_request_id TEXT",
+        [],
+    )?;
     Ok(())
 }
 
@@ -2142,9 +2169,10 @@ fn ai_request_from_row(row: &Row<'_>) -> rusqlite::Result<AiRequest> {
         status: row.get(6)?,
         result_summary: row.get(7)?,
         error: row.get(8)?,
-        created_at: row.get(9)?,
-        started_at: row.get(10)?,
-        completed_at: row.get(11)?,
+        openai_lb_request_id: row.get(9)?,
+        created_at: row.get(10)?,
+        started_at: row.get(11)?,
+        completed_at: row.get(12)?,
     })
 }
 
@@ -2164,7 +2192,7 @@ mod tests {
 
     use super::{
         Database, DocumentSave, NewDocument, NewDocumentComment, PROFILE_SUMMARY_TASKS,
-        PublishedMetadata,
+        PublishedMetadata, table_has_column,
     };
 
     fn metadata(language: &str, description: &str) -> PublishedMetadata {
@@ -2427,7 +2455,7 @@ mod tests {
             .map(|request| request.id)
             .unwrap();
         database
-            .complete_ai_request(&profile_request_id, "Initial profile metadata")
+            .complete_ai_request(&profile_request_id, "Initial profile metadata", None)
             .unwrap();
 
         let article = database
@@ -2605,13 +2633,22 @@ mod tests {
                      completed_at INTEGER,
                      UNIQUE(document_id, source_revision_id, task, target_language)
                  );
-                 INSERT INTO ai_requests SELECT * FROM ai_requests_new;
+                 INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, result_summary, error, created_at, started_at, completed_at)
+                 SELECT id, document_id, source_revision_id, task, target_language, status, result_summary, error, created_at, started_at, completed_at FROM ai_requests_new;
                  DROP TABLE ai_requests_new;",
             )
             .unwrap();
         drop(connection);
 
         let reopened = Database::open(directory.path()).unwrap();
+        assert!(
+            table_has_column(
+                &Connection::open(directory.path().join("ctx.sqlite3")).unwrap(),
+                "ai_requests",
+                "openai_lb_request_id"
+            )
+            .unwrap()
+        );
         let profile = reopened.profile_document("author-a").unwrap();
         let source = reopened
             .save_document(&DocumentSave {
@@ -2635,6 +2672,50 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|request| request.task == "profile_mbti")
+        );
+    }
+
+    #[test]
+    fn adds_openai_lb_request_id_to_current_ai_request_tables() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        drop(database);
+        let database_path = directory.path().join("ctx.sqlite3");
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "DROP INDEX ai_requests_status_idx;
+                 DROP INDEX ai_requests_document_idx;
+                 ALTER TABLE ai_requests RENAME TO ai_requests_new;
+                 CREATE TABLE ai_requests (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                     source_revision_id TEXT NOT NULL REFERENCES document_revisions(id),
+                     task TEXT NOT NULL CHECK(task IN ('metadata', 'translate', 'profile_experience', 'profile_personality', 'profile_mbti', 'profile_schwartz', 'profile_motivations', 'profile_philosophy', 'profile_timeline')),
+                     target_language TEXT NOT NULL DEFAULT '',
+                     status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
+                     result_summary TEXT,
+                     error TEXT,
+                     created_at INTEGER NOT NULL,
+                     started_at INTEGER,
+                     completed_at INTEGER,
+                     UNIQUE(document_id, source_revision_id, task, target_language)
+                 );
+                 INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, result_summary, error, created_at, started_at, completed_at)
+                 SELECT id, document_id, source_revision_id, task, target_language, status, result_summary, error, created_at, started_at, completed_at FROM ai_requests_new;
+                 DROP TABLE ai_requests_new;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let reopened = Database::open(directory.path()).unwrap();
+        assert!(
+            table_has_column(
+                &Connection::open(reopened.database_path()).unwrap(),
+                "ai_requests",
+                "openai_lb_request_id"
+            )
+            .unwrap()
         );
     }
 
@@ -2864,11 +2945,22 @@ mod tests {
         assert_eq!(database.ai_requests().unwrap()[0].status, "queued");
         let claimed = database.claim_next_ai_request().unwrap().unwrap();
         database
-            .fail_ai_request(&claimed.id, "AI is not configured")
+            .fail_ai_request(&claimed.id, "AI is not configured", Some("lb-request-1"))
             .unwrap();
         assert_eq!(database.ai_requests().unwrap()[0].status, "failed");
+        assert_eq!(
+            database.ai_requests().unwrap()[0]
+                .openai_lb_request_id
+                .as_deref(),
+            Some("lb-request-1")
+        );
         database.requeue_failed_ai_requests().unwrap();
         assert_eq!(database.ai_requests().unwrap()[0].status, "queued");
+        assert!(
+            database.ai_requests().unwrap()[0]
+                .openai_lb_request_id
+                .is_none()
+        );
 
         assert_eq!(
             database

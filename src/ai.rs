@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use chrono::NaiveDate;
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -51,14 +52,104 @@ pub struct DocumentMetadata {
     pub inferred_language: String,
 }
 
+#[derive(Clone, Debug)]
+struct AiResponse<T> {
+    value: T,
+    openai_lb_request_id: Option<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum AiError {
     #[error("the configured AI service could not be reached")]
     Request(#[from] reqwest::Error),
-    #[error("the configured AI service rejected the request: {0}")]
-    Rejected(String),
+    #[error("the configured AI service rejected the request: {message}")]
+    Rejected {
+        message: String,
+        openai_lb_request_id: Option<String>,
+    },
     #[error("the configured AI service returned an unreadable response")]
-    Response,
+    Response {
+        openai_lb_request_id: Option<String>,
+    },
+}
+
+impl AiError {
+    fn unreadable_response() -> Self {
+        Self::Response {
+            openai_lb_request_id: None,
+        }
+    }
+
+    fn with_request_id(self, openai_lb_request_id: Option<String>) -> Self {
+        match self {
+            Self::Rejected {
+                message,
+                openai_lb_request_id: existing,
+            } => Self::Rejected {
+                message,
+                openai_lb_request_id: existing.or(openai_lb_request_id),
+            },
+            Self::Response {
+                openai_lb_request_id: existing,
+            } => Self::Response {
+                openai_lb_request_id: existing.or(openai_lb_request_id),
+            },
+            error => error,
+        }
+    }
+
+    fn openai_lb_request_id(&self) -> Option<&str> {
+        match self {
+            Self::Rejected {
+                openai_lb_request_id,
+                ..
+            }
+            | Self::Response {
+                openai_lb_request_id,
+            } => openai_lb_request_id.as_deref(),
+            Self::Request(_) => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AiRequestCompletion {
+    summary: String,
+    openai_lb_request_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct AiRequestFailure {
+    message: String,
+    openai_lb_request_id: Option<String>,
+}
+
+impl AiRequestFailure {
+    fn without_request_id(error: impl std::fmt::Display) -> Self {
+        Self {
+            message: error.to_string(),
+            openai_lb_request_id: None,
+        }
+    }
+
+    fn with_request_id(
+        error: impl std::fmt::Display,
+        openai_lb_request_id: Option<String>,
+    ) -> Self {
+        Self {
+            message: error.to_string(),
+            openai_lb_request_id,
+        }
+    }
+}
+
+impl From<AiError> for AiRequestFailure {
+    fn from(error: AiError) -> Self {
+        Self {
+            message: error.to_string(),
+            openai_lb_request_id: error.openai_lb_request_id().map(str::to_owned),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,40 +220,54 @@ pub async fn run(
         document.document.kind, document.document.title, document.revision.content
     );
     let output = request_output(credentials, &system, &content).await?;
-    let proposed_content = matches!(task, AiTask::Polish).then(|| output.clone());
+    let proposed_content = matches!(task, AiTask::Polish).then(|| output.value.clone());
     Ok(AiOutput {
-        output,
+        output: output.value,
         proposed_content,
     })
 }
 
-pub async fn translate_document(
+async fn translate_document(
     credentials: &AiCredentials,
     document: &DocumentDetail,
     source_language: &str,
     target_language: &str,
     source_metadata: &PublishedMetadata,
-) -> Result<DocumentTranslation, AiError> {
+) -> Result<AiResponse<DocumentTranslation>, AiError> {
     let instructions = translation_instructions(source_language, target_language);
     let content = format!(
         "Source language: {source_language}\nTarget language: {target_language}\n\nDocument title:\n{}\n\nDocument Markdown:\n{}\n\nSource editorial metadata JSON:\n{}",
         document.document.title,
         document.revision.content,
-        serde_json::to_string(source_metadata).map_err(|_| AiError::Response)?
+        serde_json::to_string(source_metadata).map_err(|_| AiError::Response {
+            openai_lb_request_id: None,
+        })?
     );
     let output = request_output(credentials, &instructions, &content).await?;
-    translation_from_output(&output, &document.document.kind)
+    let openai_lb_request_id = output.openai_lb_request_id;
+    let value = translation_from_output(&output.value, &document.document.kind)
+        .map_err(|error| error.with_request_id(openai_lb_request_id.clone()))?;
+    Ok(AiResponse {
+        value,
+        openai_lb_request_id,
+    })
 }
 
-pub async fn extract_document_metadata(
+async fn extract_document_metadata(
     credentials: &AiCredentials,
     document: &DocumentDetail,
     published_articles: &[PublishedArticle],
-) -> Result<DocumentMetadata, AiError> {
+) -> Result<AiResponse<DocumentMetadata>, AiError> {
     let instructions = metadata_instructions(&document.document.kind);
     let content = metadata_input(document, published_articles);
     let output = request_output(credentials, &instructions, &content).await?;
-    metadata_from_output(&output, &document.document.kind)
+    let openai_lb_request_id = output.openai_lb_request_id;
+    let value = metadata_from_output(&output.value, &document.document.kind)
+        .map_err(|error| error.with_request_id(openai_lb_request_id.clone()))?;
+    Ok(AiResponse {
+        value,
+        openai_lb_request_id,
+    })
 }
 
 async fn extract_profile_summary(
@@ -170,19 +275,28 @@ async fn extract_profile_summary(
     document: &DocumentDetail,
     published_articles: &[PublishedArticle],
     task: &str,
-) -> Result<ProfileSummaryPatch, AiError> {
-    let instructions = profile_summary_instructions(task).ok_or(AiError::Response)?;
+) -> Result<AiResponse<ProfileSummaryPatch>, AiError> {
+    let instructions = profile_summary_instructions(task).ok_or(AiError::Response {
+        openai_lb_request_id: None,
+    })?;
     let input = metadata_input(document, published_articles);
     let output = request_output(credentials, &instructions, &input).await?;
-    profile_summary_from_output_with_articles(&output, task, published_articles).map_err(|error| {
-        match error {
-            AiError::Response => AiError::Rejected(format!(
-                "profile summary {task} response was not accepted ({} bytes): {}",
-                output.len(),
-                response_preview(&output)
-            )),
-            error => error,
-        }
+    let openai_lb_request_id = output.openai_lb_request_id;
+    let value = profile_summary_from_output_with_articles(&output.value, task, published_articles)
+        .map_err(|error| match error {
+            AiError::Response { .. } => AiError::Rejected {
+                message: format!(
+                    "profile summary {task} response was not accepted ({} bytes): {}",
+                    output.value.len(),
+                    response_preview(&output.value)
+                ),
+                openai_lb_request_id: openai_lb_request_id.clone(),
+            },
+            error => error.with_request_id(openai_lb_request_id.clone()),
+        })?;
+    Ok(AiResponse {
+        value,
+        openai_lb_request_id,
     })
 }
 
@@ -218,7 +332,7 @@ fn profile_summary_from_output_with_articles(
                 "profile_motivations" => "unconscious_motivations",
                 _ => "philosophical_references",
             };
-            let content = summary_string(&value, field).ok_or(AiError::Response)?;
+            let content = summary_string(&value, field).ok_or_else(AiError::unreadable_response)?;
             Ok(match task {
                 "profile_experience" => ProfileSummaryPatch::Experience(content),
                 "profile_personality" => ProfileSummaryPatch::Personality(content),
@@ -231,10 +345,10 @@ fn profile_summary_from_output_with_articles(
                 summary_value(&value, "mbti_analysis")
                     .or_else(|| summary_value(&value, "mbti"))
                     .or_else(|| (value.is_object()).then_some(&value))
-                    .ok_or(AiError::Response)?,
+                    .ok_or_else(AiError::unreadable_response)?,
             )?;
             if !valid_mbti_type(&analysis) || analysis.dimensions.len() != 4 {
-                return Err(AiError::Response);
+                return Err(AiError::unreadable_response());
             }
             const AXES: [&str; 4] = ["I/E", "N/S", "T/F", "J/P"];
             if !analysis
@@ -243,7 +357,7 @@ fn profile_summary_from_output_with_articles(
                 .zip(AXES)
                 .all(|(dimension, axis)| valid_mbti_dimension(dimension, axis))
             {
-                return Err(AiError::Response);
+                return Err(AiError::unreadable_response());
             }
             Ok(ProfileSummaryPatch::Mbti(analysis))
         }
@@ -264,10 +378,10 @@ fn profile_summary_from_output_with_articles(
                 summary_value(&value, "schwartz_values")
                     .or_else(|| summary_value(&value, "values"))
                     .or_else(|| (value.is_array()).then_some(&value))
-                    .ok_or(AiError::Response)?,
+                    .ok_or_else(AiError::unreadable_response)?,
             )?;
             if !valid_schwartz_values(&values, &VALUES) {
-                return Err(AiError::Response);
+                return Err(AiError::unreadable_response());
             }
             Ok(ProfileSummaryPatch::Schwartz(values))
         }
@@ -277,14 +391,14 @@ fn profile_summary_from_output_with_articles(
                     .or_else(|| summary_value(&value, "timeline"))
                     .or_else(|| summary_value(&value, "entries"))
                     .or_else(|| (value.is_array()).then_some(&value))
-                    .ok_or(AiError::Response)?,
+                    .ok_or_else(AiError::unreadable_response)?,
             )?;
             if !valid_daily_timeline(&entries) {
-                return Err(AiError::Response);
+                return Err(AiError::unreadable_response());
             }
             Ok(ProfileSummaryPatch::Timeline(entries))
         }
-        _ => Err(AiError::Response),
+        _ => Err(AiError::unreadable_response()),
     }
 }
 
@@ -460,7 +574,7 @@ fn json_value_from_output(output: &str) -> Result<Value, AiError> {
         .or_else(|| trimmed.strip_prefix("```JSON"))
         .map(|value| value.strip_suffix("```").unwrap_or(value).trim())
         .unwrap_or(trimmed);
-    serde_json::from_str(unwrapped).map_err(|_| AiError::Response)
+    serde_json::from_str(unwrapped).map_err(|_| AiError::unreadable_response())
 }
 
 fn summary_value<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
@@ -493,7 +607,7 @@ fn parse_mbti_analysis(value: &Value) -> Result<MbtiAnalysis, AiError> {
         return Ok(analysis);
     }
     let Some(object) = value.as_object() else {
-        return Err(AiError::Response);
+        return Err(AiError::unreadable_response());
     };
     let mut normalized = object.clone();
     if !normalized.contains_key("type_code") {
@@ -510,7 +624,7 @@ fn parse_mbti_analysis(value: &Value) -> Result<MbtiAnalysis, AiError> {
         normalized.insert("dimensions".to_owned(), dimensions.clone());
     }
     let Some(dimensions) = normalized.get("dimensions") else {
-        return Err(AiError::Response);
+        return Err(AiError::unreadable_response());
     };
     if let Some(dimensions) = dimensions.as_object() {
         let normalized_dimensions = dimensions
@@ -525,7 +639,7 @@ fn parse_mbti_analysis(value: &Value) -> Result<MbtiAnalysis, AiError> {
             .collect::<Vec<_>>();
         normalized.insert("dimensions".to_owned(), Value::Array(normalized_dimensions));
     }
-    serde_json::from_value(Value::Object(normalized)).map_err(|_| AiError::Response)
+    serde_json::from_value(Value::Object(normalized)).map_err(|_| AiError::unreadable_response())
 }
 
 fn parse_schwartz_values(value: &Value) -> Result<Vec<SchwartzValue>, AiError> {
@@ -533,7 +647,7 @@ fn parse_schwartz_values(value: &Value) -> Result<Vec<SchwartzValue>, AiError> {
         return Ok(values);
     }
     let Some(values) = value.as_array() else {
-        return Err(AiError::Response);
+        return Err(AiError::unreadable_response());
     };
     let normalized = values
         .iter()
@@ -557,7 +671,7 @@ fn parse_schwartz_values(value: &Value) -> Result<Vec<SchwartzValue>, AiError> {
             Value::Object(object)
         })
         .collect::<Vec<_>>();
-    serde_json::from_value(Value::Array(normalized)).map_err(|_| AiError::Response)
+    serde_json::from_value(Value::Array(normalized)).map_err(|_| AiError::unreadable_response())
 }
 
 fn parse_daily_timeline(value: &Value) -> Result<Vec<DailyTimelineEntry>, AiError> {
@@ -565,7 +679,7 @@ fn parse_daily_timeline(value: &Value) -> Result<Vec<DailyTimelineEntry>, AiErro
         return Ok(entries);
     }
     let Some(object) = value.as_object() else {
-        return Err(AiError::Response);
+        return Err(AiError::unreadable_response());
     };
     let entries = object
         .iter()
@@ -583,7 +697,7 @@ fn parse_daily_timeline(value: &Value) -> Result<Vec<DailyTimelineEntry>, AiErro
             json!({"date": date, "summary": text, "evidence": []})
         })
         .collect::<Vec<_>>();
-    serde_json::from_value(Value::Array(entries)).map_err(|_| AiError::Response)
+    serde_json::from_value(Value::Array(entries)).map_err(|_| AiError::unreadable_response())
 }
 
 fn apply_profile_summary_patch(
@@ -641,8 +755,16 @@ pub async fn run_worker(database: Database) {
             Ok(Some(request)) => {
                 let result = process_ai_request(&database, &request).await;
                 let completion = match result {
-                    Ok(summary) => database.complete_ai_request(&request.id, &summary),
-                    Err(error) => database.fail_ai_request(&request.id, &error),
+                    Ok(completed) => database.complete_ai_request(
+                        &request.id,
+                        &completed.summary,
+                        completed.openai_lb_request_id.as_deref(),
+                    ),
+                    Err(failure) => database.fail_ai_request(
+                        &request.id,
+                        &failure.message,
+                        failure.openai_lb_request_id.as_deref(),
+                    ),
                 };
                 if let Err(error) = completion {
                     eprintln!("CTX could not record AI request completion: {error}");
@@ -657,42 +779,60 @@ pub async fn run_worker(database: Database) {
     }
 }
 
-async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<String, String> {
+async fn process_ai_request(
+    database: &Database,
+    request: &AiRequest,
+) -> Result<AiRequestCompletion, AiRequestFailure> {
     let document = database
         .published_document_detail(&request.document_id, &request.source_revision_id)
-        .map_err(|error| error.to_string())?;
+        .map_err(AiRequestFailure::without_request_id)?;
     let Some(document) = document else {
-        return Ok("Superseded by a newer published revision".to_owned());
+        return Ok(AiRequestCompletion {
+            summary: "Superseded by a newer published revision".to_owned(),
+            openai_lb_request_id: None,
+        });
     };
     let credentials = database
         .ai_credentials()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "AI is not configured by the root administrator".to_owned())?;
+        .map_err(AiRequestFailure::without_request_id)?
+        .ok_or_else(|| {
+            AiRequestFailure::without_request_id("AI is not configured by the root administrator")
+        })?;
     match request.task.as_str() {
         task if PROFILE_SUMMARY_TASKS.contains(&task) => {
             if document.document.kind != "profile" {
-                return Err("profile summary tasks require a profile document".to_owned());
+                return Err(AiRequestFailure::without_request_id(
+                    "profile summary tasks require a profile document",
+                ));
             }
             let published_articles = database
                 .published_articles_for_author(&document.document.owner_id)
-                .map_err(|error| error.to_string())?;
+                .map_err(AiRequestFailure::without_request_id)?;
             if document.document.source_language == "und" {
-                return Err("profile metadata is still being extracted".to_owned());
+                return Err(AiRequestFailure::without_request_id(
+                    "profile metadata is still being extracted",
+                ));
             }
-            let patch = extract_profile_summary(&credentials, &document, &published_articles, task)
-                .await
-                .map_err(|error| error.to_string())?;
+            let extracted =
+                extract_profile_summary(&credentials, &document, &published_articles, task)
+                    .await
+                    .map_err(AiRequestFailure::from)?;
             let Some(mut metadata) = database
                 .published_source_metadata(
                     &request.document_id,
                     &request.source_revision_id,
                     &document.document.source_language,
                 )
-                .map_err(|error| error.to_string())?
+                .map_err(|error| {
+                    AiRequestFailure::with_request_id(error, extracted.openai_lb_request_id.clone())
+                })?
             else {
-                return Err("profile metadata is still being extracted".to_owned());
+                return Err(AiRequestFailure::with_request_id(
+                    "profile metadata is still being extracted",
+                    extracted.openai_lb_request_id,
+                ));
             };
-            let summary_name = apply_profile_summary_patch(&mut metadata, patch);
+            let summary_name = apply_profile_summary_patch(&mut metadata, extracted.value);
             let stored = database
                 .apply_profile_summary(
                     &request.document_id,
@@ -700,80 +840,117 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
                     &document.document.source_language,
                     &metadata,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    AiRequestFailure::with_request_id(error, extracted.openai_lb_request_id.clone())
+                })?;
             if !stored {
-                return Ok("Superseded by a newer published revision".to_owned());
+                return Ok(AiRequestCompletion {
+                    summary: "Superseded by a newer published revision".to_owned(),
+                    openai_lb_request_id: extracted.openai_lb_request_id,
+                });
             }
             database
                 .invalidate_profile_translation_metadata(
                     &request.document_id,
                     &request.source_revision_id,
                 )
-                .map_err(|error| error.to_string())?;
-            Ok(format!("Updated {summary_name} profile summary"))
+                .map_err(|error| {
+                    AiRequestFailure::with_request_id(error, extracted.openai_lb_request_id.clone())
+                })?;
+            Ok(AiRequestCompletion {
+                summary: format!("Updated {summary_name} profile summary"),
+                openai_lb_request_id: extracted.openai_lb_request_id,
+            })
         }
         "metadata" => {
             let published_articles = (document.document.kind == "profile")
                 .then(|| database.published_articles_for_author(&document.document.owner_id))
                 .transpose()
-                .map_err(|error| error.to_string())?
+                .map_err(AiRequestFailure::without_request_id)?
                 .unwrap_or_default();
             let extracted = extract_document_metadata(&credentials, &document, &published_articles)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(AiRequestFailure::from)?;
             let source_language = database
                 .apply_published_metadata(
                     &request.document_id,
                     &request.source_revision_id,
-                    &extracted.metadata,
-                    &extracted.inferred_language,
+                    &extracted.value.metadata,
+                    &extracted.value.inferred_language,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    AiRequestFailure::with_request_id(error, extracted.openai_lb_request_id.clone())
+                })?;
             let Some(source_language) = source_language else {
-                return Ok("Superseded by a newer published revision".to_owned());
+                return Ok(AiRequestCompletion {
+                    summary: "Superseded by a newer published revision".to_owned(),
+                    openai_lb_request_id: extracted.openai_lb_request_id,
+                });
             };
             database
                 .store_published_metadata(
                     &request.document_id,
                     &request.source_revision_id,
                     &source_language,
-                    &extracted.metadata,
+                    &extracted.value.metadata,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    AiRequestFailure::with_request_id(error, extracted.openai_lb_request_id.clone())
+                })?;
             if document.document.kind == "profile" {
                 database
                     .invalidate_profile_translation_metadata(
                         &request.document_id,
                         &request.source_revision_id,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| {
+                        AiRequestFailure::with_request_id(
+                            error,
+                            extracted.openai_lb_request_id.clone(),
+                        )
+                    })?;
                 database
                     .enqueue_profile_summary_tasks(
                         &request.document_id,
                         &request.source_revision_id,
                         None,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| {
+                        AiRequestFailure::with_request_id(
+                            error,
+                            extracted.openai_lb_request_id.clone(),
+                        )
+                    })?;
             } else {
                 database
                     .requeue_translations_missing_metadata(
                         &request.document_id,
                         &request.source_revision_id,
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| {
+                        AiRequestFailure::with_request_id(
+                            error,
+                            extracted.openai_lb_request_id.clone(),
+                        )
+                    })?;
             }
             let profile_summary_refresh = if document.document.kind == "profile" {
                 "; refreshed all profile summaries from published articles"
             } else {
                 ""
             };
-            Ok(format!(
-                "Metadata extracted; published source language is {source_language}{profile_summary_refresh}"
-            ))
+            Ok(AiRequestCompletion {
+                summary: format!(
+                    "Metadata extracted; published source language is {source_language}{profile_summary_refresh}"
+                ),
+                openai_lb_request_id: extracted.openai_lb_request_id,
+            })
         }
         "translate" => {
             if document.document.source_language == "und" {
-                return Err("the source language is still being inferred".to_owned());
+                return Err(AiRequestFailure::without_request_id(
+                    "the source language is still being inferred",
+                ));
             }
             let metadata = database
                 .published_source_metadata(
@@ -781,8 +958,10 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
                     &request.source_revision_id,
                     &document.document.source_language,
                 )
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "source metadata is still being extracted".to_owned())?;
+                .map_err(AiRequestFailure::without_request_id)?
+                .ok_or_else(|| {
+                    AiRequestFailure::without_request_id("source metadata is still being extracted")
+                })?;
             let translation = translate_document(
                 &credentials,
                 &document,
@@ -791,32 +970,42 @@ async fn process_ai_request(database: &Database, request: &AiRequest) -> Result<
                 &metadata,
             )
             .await
-            .map_err(|error| error.to_string())?;
-            if translation.metadata.is_empty()
-                || translation.metadata.inferred_lang != request.target_language
+            .map_err(AiRequestFailure::from)?;
+            if translation.value.metadata.is_empty()
+                || translation.value.metadata.inferred_lang != request.target_language
             {
-                return Err(
-                    "the translation response did not include metadata for the requested language"
-                        .to_owned(),
-                );
+                return Err(AiRequestFailure::with_request_id(
+                    "the translation response did not include metadata for the requested language",
+                    translation.openai_lb_request_id,
+                ));
             }
             let stored = database
                 .store_published_translation(
                     &request.document_id,
                     &request.source_revision_id,
                     &request.target_language,
-                    &translation.title,
-                    &translation.content,
-                    &translation.metadata,
+                    &translation.value.title,
+                    &translation.value.content,
+                    &translation.value.metadata,
                 )
-                .map_err(|error| error.to_string())?;
-            Ok(if stored {
-                format!("Translated Markdown to {}", request.target_language)
-            } else {
-                "Superseded by a newer published revision".to_owned()
+                .map_err(|error| {
+                    AiRequestFailure::with_request_id(
+                        error,
+                        translation.openai_lb_request_id.clone(),
+                    )
+                })?;
+            Ok(AiRequestCompletion {
+                summary: if stored {
+                    format!("Translated Markdown to {}", request.target_language)
+                } else {
+                    "Superseded by a newer published revision".to_owned()
+                },
+                openai_lb_request_id: translation.openai_lb_request_id,
             })
         }
-        _ => Err("unsupported AI request task".to_owned()),
+        _ => Err(AiRequestFailure::without_request_id(
+            "unsupported AI request task",
+        )),
     }
 }
 
@@ -825,12 +1014,12 @@ fn translation_from_output(
     _document_kind: &str,
 ) -> Result<DocumentTranslation, AiError> {
     let translation: TranslationOutput =
-        serde_json::from_str(output).map_err(|_| AiError::Response)?;
+        serde_json::from_str(output).map_err(|_| AiError::unreadable_response())?;
     if translation.title.trim().is_empty()
         || translation.content.trim().is_empty()
         || translation.metadata.is_empty()
     {
-        return Err(AiError::Response);
+        return Err(AiError::unreadable_response());
     }
     Ok(DocumentTranslation {
         title: translation.title,
@@ -840,11 +1029,12 @@ fn translation_from_output(
 }
 
 fn metadata_from_output(output: &str, _document_kind: &str) -> Result<DocumentMetadata, AiError> {
-    let output: MetadataOutput = serde_json::from_str(output).map_err(|_| AiError::Response)?;
+    let output: MetadataOutput =
+        serde_json::from_str(output).map_err(|_| AiError::unreadable_response())?;
     let inferred_language = output.inferred_lang;
     let inferred_language = normalize_language_tag(&inferred_language)
         .filter(|language| language != "und")
-        .ok_or(AiError::Response)?;
+        .ok_or_else(AiError::unreadable_response)?;
     let metadata = PublishedMetadata {
         description: output.description,
         summary: output.summary,
@@ -863,7 +1053,7 @@ fn metadata_from_output(output: &str, _document_kind: &str) -> Result<DocumentMe
         daily_timeline: output.daily_timeline,
     };
     if metadata.is_empty() {
-        return Err(AiError::Response);
+        return Err(AiError::unreadable_response());
     }
     Ok(DocumentMetadata {
         metadata,
@@ -1030,7 +1220,7 @@ async fn request_output(
     credentials: &AiCredentials,
     instructions: &str,
     input: &str,
-) -> Result<String, AiError> {
+) -> Result<AiResponse<String>, AiError> {
     let endpoint = format!("{}/responses", credentials.base_url.trim_end_matches('/'));
     let response = reqwest::Client::new()
         .post(endpoint)
@@ -1038,16 +1228,34 @@ async fn request_output(
         .json(&request_body(&credentials.model, instructions, input))
         .send()
         .await?;
+    let openai_lb_request_id = openai_lb_request_id(response.headers());
     if !response.status().is_success() {
-        return Err(AiError::Rejected(response.text().await?));
+        return Err(AiError::Rejected {
+            message: response.text().await?,
+            openai_lb_request_id,
+        });
     }
     let body = response.text().await?;
-    output_text_from_sse(&body).ok_or_else(|| {
-        AiError::Rejected(format!(
+    let value = output_text_from_sse(&body).ok_or_else(|| AiError::Rejected {
+        message: format!(
             "AI response contained no text output events: {}",
             sse_event_types(&body)
-        ))
+        ),
+        openai_lb_request_id: openai_lb_request_id.clone(),
+    })?;
+    Ok(AiResponse {
+        value,
+        openai_lb_request_id,
     })
+}
+
+fn openai_lb_request_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-openai-lb-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 fn request_body(model: &str, instructions: &str, input: &str) -> serde_json::Value {
@@ -1102,11 +1310,12 @@ fn system_prompt(task: &AiTask) -> String {
 
 #[cfg(test)]
 mod tests {
+    use reqwest::header::{HeaderMap, HeaderValue};
     use serde_json::{Value, json};
 
     use super::{
         AiTask, ProfileSummaryPatch, metadata_from_output, metadata_instructions,
-        output_text_from_sse, profile_summary_from_output,
+        openai_lb_request_id, output_text_from_sse, profile_summary_from_output,
         profile_summary_from_output_with_articles, profile_summary_instructions, request_body,
         system_prompt, translation_from_output, translation_instructions,
     };
@@ -1189,6 +1398,19 @@ mod tests {
                     }]
                 }]
             })
+        );
+    }
+
+    #[test]
+    fn extracts_openai_lb_request_id_from_response_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-openai-lb-request-id",
+            HeaderValue::from_static("ctx-upstream-request-123"),
+        );
+        assert_eq!(
+            openai_lb_request_id(&headers).as_deref(),
+            Some("ctx-upstream-request-123")
         );
     }
 

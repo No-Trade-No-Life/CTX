@@ -69,7 +69,9 @@ public square for anyone to read.
   GFM, and Mermaid; the reader shows the original with a background-work
   notice until that localized article is ready.
 - Root administrators can inspect queued, running, successful, and failed
-  metadata/translation requests at **Administration → AI request audit**.
+  metadata/translation requests at **Administration → AI request audit**. Each
+  completed upstream interaction records its `x-openai-lb-request-id`, so a
+  CTX task can be correlated directly with its OpenAI LB request audit.
 - Authors can ask AI to polish a saved document and review the proposed
   Markdown before explicitly saving it as a new immutable revision.
 - Root administrators can inspect five-second CPU, memory, network, disk, and
