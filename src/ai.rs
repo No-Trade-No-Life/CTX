@@ -1202,8 +1202,15 @@ fn translation_from_output(
     _document_kind: &str,
 ) -> Result<DocumentTranslation, AiError> {
     let value = structured_output_value(output, "title")?;
-    let translation: TranslationOutput =
-        serde_json::from_value(value).map_err(|_| AiError::unreadable_response())?;
+    let translation: TranslationOutput = serde_json::from_value(value.clone())
+        .or_else(|_| {
+            let mut fallback = value;
+            if let Some(metadata) = fallback.get_mut("metadata") {
+                *metadata = metadata_only_value(metadata);
+            }
+            serde_json::from_value(fallback)
+        })
+        .map_err(|_| AiError::unreadable_response())?;
     if translation.title.trim().is_empty()
         || translation.content.trim().is_empty()
         || translation.metadata.is_empty()
@@ -1219,25 +1226,8 @@ fn translation_from_output(
 
 fn metadata_from_output(output: &str, _document_kind: &str) -> Result<DocumentMetadata, AiError> {
     let value = structured_output_value(output, "inferred_lang")?;
-    let metadata_only_value = {
-        let mut value = value.clone();
-        if let Some(object) = value.as_object_mut() {
-            for field in [
-                "experience_summary",
-                "personality_analysis",
-                "mbti_analysis",
-                "schwartz_values",
-                "unconscious_motivations",
-                "philosophical_references",
-                "daily_timeline",
-            ] {
-                object.remove(field);
-            }
-        }
-        value
-    };
-    let output: MetadataOutput = serde_json::from_value(value)
-        .or_else(|_| serde_json::from_value(metadata_only_value))
+    let output: MetadataOutput = serde_json::from_value(value.clone())
+        .or_else(|_| serde_json::from_value(metadata_only_value(&value)))
         .map_err(|_| AiError::unreadable_response())?;
     let inferred_language = output.inferred_lang;
     let inferred_language = normalize_language_tag(&inferred_language)
@@ -1267,6 +1257,24 @@ fn metadata_from_output(output: &str, _document_kind: &str) -> Result<DocumentMe
         metadata,
         inferred_language,
     })
+}
+
+fn metadata_only_value(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(object) = value.as_object_mut() {
+        for field in [
+            "experience_summary",
+            "personality_analysis",
+            "mbti_analysis",
+            "schwartz_values",
+            "unconscious_motivations",
+            "philosophical_references",
+            "daily_timeline",
+        ] {
+            object.remove(field);
+        }
+    }
+    value
 }
 
 fn valid_mbti_type(analysis: &MbtiAnalysis) -> bool {
@@ -1798,7 +1806,7 @@ mod tests {
     fn accepts_fenced_and_wrapped_structured_outputs() {
         let translation = translation_from_output(
             r##"```json
-{"translation":{"title":"Translated title","content":"# Translated","metadata":{"inferred_lang":"en-US","description":"Translated"}}}
+{"translation":{"title":"Translated title","content":"# Translated","metadata":{"inferred_lang":"en-US","description":"Translated","experience_summary":{"markdown":"Resume"},"personality_analysis":{"markdown":"Patterns"}}}}
 ```"##,
             "article",
         )
@@ -1952,7 +1960,7 @@ mod tests {
                 if value.contains("### A theme") && value.contains("A tentative interpretation.")
         ));
         let personality = profile_summary_from_output(
-            r##"{"personality_analysis":{"disclaimer":"Non-clinical reading.","mbti":{"type":"INTJ","confidence":"low","rationale":"Systems-oriented writing."}}}"##,
+            r##"{"personality_analysis":{"disclaimer":"Non-clinical reading.","observable_patterns":["Systems-oriented writing."],"mbti":{"type":"INTJ","confidence":"low","rationale":"Systems-oriented writing."}}}"##,
             "profile_personality",
         )
         .unwrap();
