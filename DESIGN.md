@@ -28,15 +28,20 @@ Geist is the UI face. The editing canvas uses a measured 16px body and a 72ch pr
 
 ## Logo
 
-`web/public/logo.svg` is the shared, transparent `<CTX>` wordmark. It uses SVG
-text in a bold monospace face, framed by a small circle, diamond, line, and dot.
-Both sidebar headers display the same asset at 120 × 48 px; it scales to fit the
-collapsed navigation rail without clipping the wordmark.
+`web/public/logo.svg` is the shared, transparent 1:1 brand mark and favicon.
+It depicts one cobalt building block with a single raised stud, using solid
+geometric faces and no visible text. Its 64 × 64 viewBox keeps the silhouette
+legible at favicon sizes without relying on lettering or thin strokes.
+
+Both sidebar headers display the mark at 32 × 32 px, or 28 × 28 px in the
+collapsed rail. They use the same `/logo.svg?v=block` URL as the favicon; the
+version query refreshes previously cached wordmarks when this design ships.
 
 The SVG has its own light and dark palettes for standalone use. The page sets
-`color-scheme` with the active theme so the embedded image's
-`prefers-color-scheme` also follows manual theme changes, including the existing
-`D` shortcut. No additional theme state or logo animation is needed.
+`color-scheme` with the active theme so the sidebar image's
+`prefers-color-scheme` follows manual theme changes, including the existing
+`D` shortcut. The favicon follows the browser's color scheme. Neither surface
+requires extra theme state or animation.
 
 ## Layout and components
 

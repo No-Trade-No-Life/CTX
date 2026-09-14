@@ -238,11 +238,11 @@ function PublicShell() {
               onClick={() => navigate("/square")}
             >
               <img
-                src="/logo.svg"
+                src="/logo.svg?v=block"
                 alt={t("appName")}
-                width={120}
-                height={48}
-                className="h-auto w-30 max-w-full"
+                width={32}
+                height={32}
+                className="size-8 shrink-0 group-data-[collapsible=icon]:size-7"
               />
             </Button>
           </SidebarHeader>
@@ -385,11 +385,11 @@ function CtxShell({ token }: { token: string }) {
               onClick={() => navigate("/documents")}
             >
               <img
-                src="/logo.svg"
+                src="/logo.svg?v=block"
                 alt={t("appName")}
-                width={120}
-                height={48}
-                className="h-auto w-30 max-w-full"
+                width={32}
+                height={32}
+                className="size-8 shrink-0 group-data-[collapsible=icon]:size-7"
               />
             </Button>
           </SidebarHeader>
