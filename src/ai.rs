@@ -1210,7 +1210,14 @@ fn translation_from_output(
             }
             serde_json::from_value(fallback)
         })
-        .map_err(|_| AiError::unreadable_response())?;
+        .map_err(|_| AiError::Rejected {
+            message: format!(
+                "translation response was not accepted ({} bytes): {}",
+                output.len(),
+                response_preview(output)
+            ),
+            openai_lb_request_id: None,
+        })?;
     if translation.title.trim().is_empty()
         || translation.content.trim().is_empty()
         || translation.metadata.is_empty()
