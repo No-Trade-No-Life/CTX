@@ -1,18 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="160" height="64" viewBox="0 0 160 64" role="img" aria-labelledby="title">
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title">
   <title id="title">CTX</title>
   <style>
-    .wordmark { fill: #151b23; }
-    .geometry { color: #1764ac; }
+    .top { fill: #78b6ee; }
+    .left { fill: #1764ac; }
+    .right, .stud { fill: #2d79c0; }
+    .cap { fill: #b9ddff; }
     @media (prefers-color-scheme: dark) {
-      .wordmark { fill: #fafafa; }
-      .geometry { color: #8dbcf0; }
+      .top { fill: #a2cfff; }
+      .left { fill: #438fd2; }
+      .right, .stud { fill: #65a8e3; }
+      .cap { fill: #d7ebff; }
     }
   </style>
-  <g class="geometry" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <circle cx="22" cy="10" r="3.5" />
-    <path d="m138 8 4.5 4.5-4.5 4.5-4.5-4.5Z" />
-    <path d="M25 56h15" />
-    <circle cx="131" cy="55" r="1.5" fill="currentColor" stroke="none" />
+  <g aria-hidden="true">
+    <path class="left" d="m6 31 26 14v15L6 46Z" />
+    <path class="right" d="m32 45 26-14v15L32 60Z" />
+    <path class="top" d="m32 17 26 14-26 14L6 31Z" />
+    <path class="stud" d="M21 12v10c0 3 4.9 5.5 11 5.5S43 25 43 22V12Z" />
+    <ellipse class="cap" cx="32" cy="12" rx="11" ry="5.5" />
   </g>
-  <text class="wordmark" x="80" y="45" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace" font-size="40" font-weight="700" letter-spacing="-1" textLength="120" lengthAdjust="spacingAndGlyphs">&lt;CTX&gt;</text>
 </svg>
