@@ -231,18 +231,19 @@ function PublicShell() {
     <TooltipProvider>
       <SidebarProvider>
         <Sidebar collapsible="icon">
-          <SidebarHeader className="px-3 py-4">
+          <SidebarHeader>
             <Button
               variant="ghost"
-              className="w-full justify-start px-1.5 font-semibold"
+              className="h-12 w-full justify-start px-1.5 group-data-[collapsible=icon]:px-0"
               onClick={() => navigate("/square")}
             >
-              <span className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-                C
-              </span>
-              <span className="group-data-[collapsible=icon]:hidden">
-                {t("appName")}
-              </span>
+              <img
+                src="/logo.svg"
+                alt={t("appName")}
+                width={120}
+                height={48}
+                className="h-auto w-30 max-w-full"
+              />
             </Button>
           </SidebarHeader>
           <SidebarContent>
@@ -377,18 +378,19 @@ function CtxShell({ token }: { token: string }) {
     <TooltipProvider>
       <SidebarProvider>
         <Sidebar collapsible="icon">
-          <SidebarHeader className="px-3 py-4">
+          <SidebarHeader>
             <Button
               variant="ghost"
-              className="w-full justify-start px-1.5 font-semibold"
+              className="h-12 w-full justify-start px-1.5 group-data-[collapsible=icon]:px-0"
               onClick={() => navigate("/documents")}
             >
-              <span className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground">
-                C
-              </span>
-              <span className="group-data-[collapsible=icon]:hidden">
-                {t("appName")}
-              </span>
+              <img
+                src="/logo.svg"
+                alt={t("appName")}
+                width={120}
+                height={48}
+                className="h-auto w-30 max-w-full"
+              />
             </Button>
           </SidebarHeader>
           <SidebarContent>

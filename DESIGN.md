@@ -26,6 +26,18 @@ The strategy is restrained. Cobalt is reserved for the selected location, the pr
 
 Geist is the UI face. The editing canvas uses a measured 16px body and a 72ch prose line length; the application shell uses compact 14px controls and 24px page headings. Markdown and source metadata use the mono face only when their provenance matters.
 
+## Logo
+
+`web/public/logo.svg` is the shared, transparent `<CTX>` wordmark. It uses SVG
+text in a bold monospace face, framed by a small circle, diamond, line, and dot.
+Both sidebar headers display the same asset at 120 × 48 px; it scales to fit the
+collapsed navigation rail without clipping the wordmark.
+
+The SVG has its own light and dark palettes for standalone use. The page sets
+`color-scheme` with the active theme so the embedded image's
+`prefers-color-scheme` also follows manual theme changes, including the existing
+`D` shortcut. No additional theme state or logo animation is needed.
+
 ## Layout and components
 
 The responsive application shell uses a compact document list, a writing canvas, and an optional AI panel. The public square is a readable list of articles and the public reader limits prose to a 72ch measure. Shared controls are shadcn Base UI components; surfaces use an 8px radius and either a quiet border or a defined small shadow, never both as decoration. Motion stays within 150–200ms and communicates save, publish, or task state only.

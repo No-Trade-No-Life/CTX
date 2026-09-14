@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="64" viewBox="0 0 160 64" role="img" aria-labelledby="title">
+  <title id="title">CTX</title>
+  <style>
+    .wordmark { fill: #151b23; }
+    .geometry { color: #1764ac; }
+    @media (prefers-color-scheme: dark) {
+      .wordmark { fill: #fafafa; }
+      .geometry { color: #8dbcf0; }
+    }
+  </style>
+  <g class="geometry" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="22" cy="10" r="3.5" />
+    <path d="m138 8 4.5 4.5-4.5 4.5-4.5-4.5Z" />
+    <path d="M25 56h15" />
+    <circle cx="131" cy="55" r="1.5" fill="currentColor" stroke="none" />
+  </g>
+  <text class="wordmark" x="80" y="45" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace" font-size="40" font-weight="700" letter-spacing="-1" textLength="120" lengthAdjust="spacingAndGlyphs">&lt;CTX&gt;</text>
+</svg>
