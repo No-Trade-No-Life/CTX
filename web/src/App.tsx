@@ -613,7 +613,7 @@ function DocumentListPage({ token }: { token: string }) {
               {index > 0 ? <Separator /> : null}
               <DocumentRow
                 document={document}
-                updatedAt={formatDate(document.updated_at, locale)}
+                updatedAt={formatDateTime(document.updated_at, locale)}
                 onOpen={() => navigate(`/documents/${document.id}`)}
                 onViewPublic={() =>
                   navigate(
@@ -1361,6 +1361,7 @@ function PublicationTimeEditor({
           <Input
             id="document-publication-time"
             type="datetime-local"
+            step={1}
             value={publicationValue}
             disabled={update.isPending}
             className="w-auto"
@@ -1859,7 +1860,7 @@ function SquarePage() {
               {index > 0 ? <Separator /> : null}
               <PublicDocumentRow
                 document={document}
-                date={formatDate(document.published_at, locale)}
+                date={formatDateTime(document.published_at, locale)}
                 onOpen={() => navigate(`/p/${document.id}`)}
               />
             </div>
@@ -1980,7 +1981,7 @@ function PublicDocumentPage() {
         <p className="mt-3 text-sm text-muted-foreground">
           {t("publishedOn").replace(
             "{date}",
-            formatDate(document.data.published_at, locale)
+            formatDateTime(document.data.published_at, locale)
           )}
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -3121,7 +3122,7 @@ function PublicUserPage() {
             <p className="mt-3 text-sm text-muted-foreground">
               {t("publishedOn").replace(
                 "{date}",
-                formatDate(document.published_at, locale)
+                formatDateTime(document.published_at, locale)
               )}
             </p>
             <article className="mt-10 max-w-[72ch]">
@@ -3600,11 +3601,11 @@ function AiRequestAuditPage({ token }: { token: string }) {
                     </Badge>
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                    {formatDate(item.created_at, locale)}
+                    {formatDateTime(item.created_at, locale)}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
                     {item.completed_at
-                      ? formatDate(item.completed_at, locale)
+                      ? formatDateTime(item.completed_at, locale)
                       : "—"}
                   </td>
                   <td className="max-w-72 px-4 py-3 font-mono text-xs text-muted-foreground">
@@ -3957,6 +3958,7 @@ function formatDateTime(timestamp: number, locale: Locale) {
     hour: "2-digit",
     minute: "2-digit",
     month: "short",
+    second: "2-digit",
     year: "numeric",
   }).format(new Date(timestamp * 1000))
 }
@@ -3964,7 +3966,7 @@ function formatDateTime(timestamp: number, locale: Locale) {
 function datetimeLocalValue(timestamp: number) {
   const date = new Date(timestamp * 1_000)
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
-  return local.toISOString().slice(0, 16)
+  return local.toISOString().slice(0, 19)
 }
 
 function useBrowserTitle(title?: string) {
