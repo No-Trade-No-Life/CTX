@@ -33,8 +33,9 @@ It depicts one cobalt building block with a single raised stud, using solid
 geometric faces and no visible text. Its 64 × 64 viewBox keeps the silhouette
 legible at favicon sizes without relying on lettering or thin strokes.
 
-Both sidebar headers display the mark at 32 × 32 px, or 28 × 28 px in the
-collapsed rail. They use the same `/logo.svg?v=block` URL as the favicon; the
+Both sidebar headers display the mark at 32 × 32 px alongside the semibold
+product name CTX. Collapsed rails show only the mark at 28 × 28 px. They use
+the same `/logo.svg?v=block` URL as the favicon; the
 version query refreshes previously cached wordmarks when this design ships.
 
 The SVG has its own light and dark palettes for standalone use. The page sets

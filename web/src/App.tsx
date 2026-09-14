@@ -234,16 +234,20 @@ function PublicShell() {
           <SidebarHeader>
             <Button
               variant="ghost"
-              className="h-12 w-full justify-start px-1.5 group-data-[collapsible=icon]:px-0"
+              aria-label={t("appName")}
+              className="h-12 w-full justify-start gap-2 px-1.5 group-data-[collapsible=icon]:px-0"
               onClick={() => navigate("/square")}
             >
               <img
                 src="/logo.svg?v=block"
-                alt={t("appName")}
+                alt=""
                 width={32}
                 height={32}
                 className="size-8 shrink-0 group-data-[collapsible=icon]:size-7"
               />
+              <span className="font-semibold group-data-[collapsible=icon]:hidden">
+                {t("appName")}
+              </span>
             </Button>
           </SidebarHeader>
           <SidebarContent>
@@ -381,16 +385,20 @@ function CtxShell({ token }: { token: string }) {
           <SidebarHeader>
             <Button
               variant="ghost"
-              className="h-12 w-full justify-start px-1.5 group-data-[collapsible=icon]:px-0"
+              aria-label={t("appName")}
+              className="h-12 w-full justify-start gap-2 px-1.5 group-data-[collapsible=icon]:px-0"
               onClick={() => navigate("/documents")}
             >
               <img
                 src="/logo.svg?v=block"
-                alt={t("appName")}
+                alt=""
                 width={32}
                 height={32}
                 className="size-8 shrink-0 group-data-[collapsible=icon]:size-7"
               />
+              <span className="font-semibold group-data-[collapsible=icon]:hidden">
+                {t("appName")}
+              </span>
             </Button>
           </SidebarHeader>
           <SidebarContent>
