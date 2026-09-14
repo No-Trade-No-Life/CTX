@@ -1112,8 +1112,26 @@ fn translation_from_output(
 
 fn metadata_from_output(output: &str, _document_kind: &str) -> Result<DocumentMetadata, AiError> {
     let value = structured_output_value(output, "inferred_lang")?;
-    let output: MetadataOutput =
-        serde_json::from_value(value).map_err(|_| AiError::unreadable_response())?;
+    let metadata_only_value = {
+        let mut value = value.clone();
+        if let Some(object) = value.as_object_mut() {
+            for field in [
+                "experience_summary",
+                "personality_analysis",
+                "mbti_analysis",
+                "schwartz_values",
+                "unconscious_motivations",
+                "philosophical_references",
+                "daily_timeline",
+            ] {
+                object.remove(field);
+            }
+        }
+        value
+    };
+    let output: MetadataOutput = serde_json::from_value(value)
+        .or_else(|_| serde_json::from_value(metadata_only_value))
+        .map_err(|_| AiError::unreadable_response())?;
     let inferred_language = output.inferred_lang;
     let inferred_language = normalize_language_tag(&inferred_language)
         .filter(|language| language != "und")
@@ -1651,7 +1669,7 @@ mod tests {
         assert_eq!(translation.title, "Translated title");
         let metadata = metadata_from_output(
             r##"```json
-{"metadata":{"inferred_lang":"ja-jp","description":"A summary"}}
+{"metadata":{"inferred_lang":"ja-jp","description":"A summary","experience_summary":{"markdown":"Resume"},"personality_analysis":{"markdown":"Patterns"},"mbti_analysis":{"type_code":"INTJ"},"schwartz_values":[{"key":"security"}],"unconscious_motivations":{"interpretations":[]},"philosophical_references":{"markdown":"References"},"daily_timeline":[{"date":"2026-01-01","summary":"A day"}]}}
 ```"##,
             "article",
         )
