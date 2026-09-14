@@ -405,22 +405,11 @@ fn normalize_profile_summary_value(value: &mut Value, published_articles: &[Publ
         .and_then(Value::as_object_mut)
     {
         normalize_confidence(dimensions, "confidence");
-        if let Some(items) = dimensions
-            .get_mut("dimensions")
-            .and_then(Value::as_array_mut)
-        {
-            for item in items {
-                let Some(item) = item.as_object_mut() else {
-                    continue;
-                };
-                if !item.contains_key("axis")
-                    && let Some(axis) = item.remove("dimension")
-                {
-                    item.insert("axis".to_owned(), axis);
-                }
-                normalize_confidence(item, "confidence");
-                normalize_evidence(item, published_articles);
-            }
+        if let Some(raw_dimensions) = dimensions.remove("dimensions") {
+            dimensions.insert(
+                "dimensions".to_owned(),
+                normalize_mbti_dimensions(raw_dimensions, published_articles),
+            );
         }
     }
     if let Some(values) = object.remove("schwartz_values") {
@@ -435,6 +424,60 @@ fn normalize_profile_summary_value(value: &mut Value, published_articles: &[Publ
             normalize_daily_timeline(entries, published_articles),
         );
     }
+}
+
+fn normalize_mbti_dimensions(value: Value, published_articles: &[PublishedArticle]) -> Value {
+    match value {
+        Value::Array(mut items) => {
+            for item in &mut items {
+                normalize_mbti_dimension(item, published_articles, None);
+            }
+            Value::Array(items)
+        }
+        Value::Object(items) => {
+            let mut items = items
+                .into_iter()
+                .map(|(axis, mut item)| {
+                    normalize_mbti_dimension(&mut item, published_articles, Some(&axis));
+                    item
+                })
+                .collect::<Vec<_>>();
+            items.sort_by_key(|item| {
+                item.get("axis")
+                    .and_then(Value::as_str)
+                    .map(mbti_axis_order)
+                    .unwrap_or(usize::MAX)
+            });
+            Value::Array(items)
+        }
+        value => value,
+    }
+}
+
+fn mbti_axis_order(axis: &str) -> usize {
+    ["I/E", "N/S", "T/F", "J/P"]
+        .into_iter()
+        .position(|expected| expected == axis)
+        .unwrap_or(usize::MAX)
+}
+
+fn normalize_mbti_dimension(
+    value: &mut Value,
+    published_articles: &[PublishedArticle],
+    axis: Option<&str>,
+) {
+    let Some(item) = value.as_object_mut() else {
+        return;
+    };
+    if !item.contains_key("axis") {
+        if let Some(dimension) = item.remove("dimension") {
+            item.insert("axis".to_owned(), dimension);
+        } else if let Some(axis) = axis {
+            item.insert("axis".to_owned(), Value::String(axis.to_owned()));
+        }
+    }
+    normalize_confidence(item, "confidence");
+    normalize_evidence(item, published_articles);
 }
 
 fn normalize_confidence(object: &mut serde_json::Map<String, Value>, field: &str) {
@@ -634,53 +677,117 @@ fn markdown_from_value(value: &Value) -> Option<String> {
             return Some(text.to_owned());
         }
     }
-    let interpretations = object.get("interpretations")?.as_array()?;
-    let markdown = interpretations
-        .iter()
-        .filter_map(|interpretation| {
-            let object = interpretation.as_object()?;
-            let title = object
-                .get("theme")
-                .or_else(|| object.get("title"))
-                .or_else(|| object.get("name"))
-                .and_then(Value::as_str)
-                .filter(|title| !title.trim().is_empty());
-            let body = object
-                .get("interpretation")
-                .or_else(|| object.get("summary"))
-                .or_else(|| object.get("description"))
-                .or_else(|| object.get("text"))
-                .and_then(Value::as_str)
-                .filter(|body| !body.trim().is_empty());
-            let mut section = match (title, body) {
-                (Some(title), Some(body)) => format!("### {title}\n\n{body}"),
-                (None, Some(body)) => body.to_owned(),
-                _ => return None,
-            };
-            if let Some(evidence) = object.get("evidence").and_then(Value::as_array) {
-                for item in evidence {
-                    let Some(item) = item.as_object() else {
-                        continue;
-                    };
-                    let Some(explanation) = item.get("explanation").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let title = item
-                        .get("article_title")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Source article");
-                    let url = item
-                        .get("article_url")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    section.push_str(&format!("\n\n- [{title}]({url})：{explanation}"));
+    if let Some(interpretations) = object.get("interpretations").and_then(Value::as_array) {
+        let markdown = interpretations
+            .iter()
+            .filter_map(|interpretation| {
+                let object = interpretation.as_object()?;
+                let title = object
+                    .get("theme")
+                    .or_else(|| object.get("title"))
+                    .or_else(|| object.get("name"))
+                    .and_then(Value::as_str)
+                    .filter(|title| !title.trim().is_empty());
+                let body = object
+                    .get("interpretation")
+                    .or_else(|| object.get("summary"))
+                    .or_else(|| object.get("description"))
+                    .or_else(|| object.get("text"))
+                    .and_then(Value::as_str)
+                    .filter(|body| !body.trim().is_empty());
+                let mut section = match (title, body) {
+                    (Some(title), Some(body)) => format!("### {title}\n\n{body}"),
+                    (None, Some(body)) => body.to_owned(),
+                    _ => return None,
+                };
+                if let Some(evidence) = object.get("evidence").and_then(Value::as_array) {
+                    for item in evidence {
+                        let Some(item) = item.as_object() else {
+                            continue;
+                        };
+                        let Some(explanation) = item.get("explanation").and_then(Value::as_str)
+                        else {
+                            continue;
+                        };
+                        let title = item
+                            .get("article_title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Source article");
+                        let url = item
+                            .get("article_url")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        section.push_str(&format!("\n\n- [{title}]({url})：{explanation}"));
+                    }
                 }
+                Some(section)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !markdown.trim().is_empty() {
+            return Some(markdown);
+        }
+    }
+    let mut sections = Vec::new();
+    for field in [
+        "disclaimer",
+        "analysis",
+        "rationale",
+        "observations",
+        "patterns",
+        "traits",
+        "writing_style",
+        "communication_style",
+    ] {
+        if let Some(text) = object.get(field).and_then(Value::as_str)
+            && !text.trim().is_empty()
+        {
+            sections.push(text.to_owned());
+        }
+    }
+    if let Some(mbti) = object.get("mbti").and_then(Value::as_object) {
+        let type_code = mbti
+            .get("type")
+            .or_else(|| mbti.get("type_code"))
+            .and_then(Value::as_str);
+        let confidence = mbti.get("confidence").and_then(Value::as_str);
+        let rationale = mbti.get("rationale").and_then(Value::as_str);
+        if type_code.is_some() || rationale.is_some() {
+            let mut section = type_code
+                .map(|type_code| format!("MBTI-style writing signal: {type_code}"))
+                .unwrap_or_default();
+            if let Some(confidence) = confidence {
+                section.push_str(&format!(" ({confidence} confidence)"));
             }
-            Some(section)
+            if let Some(rationale) = rationale {
+                section.push_str(&format!("\n\n{rationale}"));
+            }
+            sections.push(section);
+        }
+    }
+    if !sections.is_empty() {
+        return Some(sections.join("\n\n"));
+    }
+    let sections = object
+        .iter()
+        .filter_map(|(field, value)| {
+            let text = match value {
+                Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
+                Value::Array(items) => {
+                    let items = items
+                        .iter()
+                        .filter_map(markdown_from_value)
+                        .map(|item| format!("- {item}"))
+                        .collect::<Vec<_>>();
+                    (!items.is_empty()).then(|| items.join("\n"))
+                }
+                _ => None,
+            }?;
+            Some(format!("### {}\n\n{text}", field.replace('_', " ")))
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    (!markdown.trim().is_empty()).then_some(markdown)
+    (!sections.trim().is_empty()).then_some(sections)
 }
 
 fn parse_mbti_analysis(value: &Value) -> Result<MbtiAnalysis, AiError> {
@@ -1843,6 +1950,34 @@ mod tests {
             motivations,
             super::ProfileSummaryPatch::Motivations(value)
                 if value.contains("### A theme") && value.contains("A tentative interpretation.")
+        ));
+        let personality = profile_summary_from_output(
+            r##"{"personality_analysis":{"disclaimer":"Non-clinical reading.","mbti":{"type":"INTJ","confidence":"low","rationale":"Systems-oriented writing."}}}"##,
+            "profile_personality",
+        )
+        .unwrap();
+        assert!(matches!(
+            personality,
+            super::ProfileSummaryPatch::Personality(value)
+                if value.contains("Non-clinical reading.")
+                    && value.contains("MBTI-style writing signal: INTJ")
+        ));
+        let mbti = profile_summary_from_output_with_articles(
+            r##"{"mbti_analysis":{"type_code":"INTJ","confidence":"medium","dimensions":{"I/E":{"preference":"I","confidence":"medium","evidence":[{"article_url":"#/p/article-1","observation":"Observed pattern."}]},"N/S":{"preference":"N","confidence":"medium","evidence":[{"article_url":"#/p/article-1","observation":"Observed pattern."}]},"T/F":{"preference":"T","confidence":"medium","evidence":[{"article_url":"#/p/article-1","observation":"Observed pattern."}]},"J/P":{"preference":"J","confidence":"medium","evidence":[{"article_url":"#/p/article-1","observation":"Observed pattern."}]}}}}"##,
+            "profile_mbti",
+            &[PublishedArticle {
+                id: "article-1".to_owned(),
+                title: "Source article".to_owned(),
+                content: String::new(),
+                inferred_date: String::new(),
+                published_date: String::new(),
+            }],
+        )
+        .unwrap();
+        assert!(matches!(
+            mbti,
+            super::ProfileSummaryPatch::Mbti(value)
+                if value.dimensions.len() == 4 && value.dimensions[0].axis == "I/E"
         ));
     }
 
