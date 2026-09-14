@@ -567,7 +567,20 @@ fn json_value_from_output(output: &str) -> Result<Value, AiError> {
         .or_else(|| trimmed.strip_prefix("```JSON"))
         .map(|value| value.strip_suffix("```").unwrap_or(value).trim())
         .unwrap_or(trimmed);
-    serde_json::from_str(unwrapped).map_err(|_| AiError::unreadable_response())
+    serde_json::from_str(unwrapped)
+        .or_else(|_| {
+            trimmed
+                .char_indices()
+                .filter(|(_, character)| matches!(character, '{' | '['))
+                .find_map(|(index, _)| {
+                    serde_json::Deserializer::from_str(&trimmed[index..])
+                        .into_iter::<Value>()
+                        .next()
+                        .and_then(Result::ok)
+                })
+                .ok_or_else(|| serde_json::Error::io(std::io::Error::other("no JSON value")))
+        })
+        .map_err(|_| AiError::unreadable_response())
 }
 
 fn structured_output_value(output: &str, required_field: &str) -> Result<Value, AiError> {
@@ -1649,6 +1662,16 @@ mod tests {
                 .unwrap()["inferred_lang"],
             "en-US"
         );
+    }
+
+    #[test]
+    fn accepts_json_surrounded_by_prose() {
+        let translation = translation_from_output(
+            "Here is the requested JSON:\n```json\n{\"title\":\"Title\",\"content\":\"# Content\",\"metadata\":{\"inferred_lang\":\"en-US\",\"summary\":\"Summary\"}}\n```\n",
+            "article",
+        )
+        .unwrap();
+        assert_eq!(translation.title, "Title");
     }
 
     #[test]
