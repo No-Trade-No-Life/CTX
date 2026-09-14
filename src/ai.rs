@@ -153,13 +153,6 @@ impl From<AiError> for AiRequestFailure {
 }
 
 #[derive(Debug, Deserialize)]
-struct ResponsesOutputTextDone {
-    #[serde(rename = "type")]
-    kind: String,
-    text: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct TranslationOutput {
     title: String,
     content: String,
@@ -577,6 +570,22 @@ fn json_value_from_output(output: &str) -> Result<Value, AiError> {
     serde_json::from_str(unwrapped).map_err(|_| AiError::unreadable_response())
 }
 
+fn structured_output_value(output: &str, required_field: &str) -> Result<Value, AiError> {
+    let value = json_value_from_output(output)?;
+    if value.get(required_field).is_some() {
+        return Ok(value);
+    }
+    ["translation", "metadata", "result", "data", "output"]
+        .into_iter()
+        .find_map(|wrapper| {
+            value
+                .get(wrapper)
+                .filter(|value| value.get(required_field).is_some())
+                .cloned()
+        })
+        .ok_or_else(AiError::unreadable_response)
+}
+
 fn summary_value<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
     value
         .get(field)
@@ -587,12 +596,12 @@ fn summary_value<'a>(value: &'a Value, field: &str) -> Option<&'a Value> {
         })
         .or_else(|| value.get("result").and_then(|result| result.get(field)))
         .or_else(|| value.get("data").and_then(|data| data.get(field)))
+        .or_else(|| value.get("output").and_then(|output| output.get(field)))
 }
 
 fn summary_string(value: &Value, field: &str) -> Option<String> {
     summary_value(value, field)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+        .and_then(markdown_from_value)
         .or_else(|| {
             value
                 .get("content")
@@ -600,6 +609,65 @@ fn summary_string(value: &Value, field: &str) -> Option<String> {
                 .map(str::to_owned)
         })
         .or_else(|| value.as_str().map(str::to_owned))
+}
+
+fn markdown_from_value(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_owned());
+    }
+    let object = value.as_object()?;
+    for field in ["markdown", "text", "content", "summary", "description"] {
+        if let Some(text) = object.get(field).and_then(Value::as_str) {
+            return Some(text.to_owned());
+        }
+    }
+    let interpretations = object.get("interpretations")?.as_array()?;
+    let markdown = interpretations
+        .iter()
+        .filter_map(|interpretation| {
+            let object = interpretation.as_object()?;
+            let title = object
+                .get("theme")
+                .or_else(|| object.get("title"))
+                .or_else(|| object.get("name"))
+                .and_then(Value::as_str)
+                .filter(|title| !title.trim().is_empty());
+            let body = object
+                .get("interpretation")
+                .or_else(|| object.get("summary"))
+                .or_else(|| object.get("description"))
+                .or_else(|| object.get("text"))
+                .and_then(Value::as_str)
+                .filter(|body| !body.trim().is_empty());
+            let mut section = match (title, body) {
+                (Some(title), Some(body)) => format!("### {title}\n\n{body}"),
+                (None, Some(body)) => body.to_owned(),
+                _ => return None,
+            };
+            if let Some(evidence) = object.get("evidence").and_then(Value::as_array) {
+                for item in evidence {
+                    let Some(item) = item.as_object() else {
+                        continue;
+                    };
+                    let Some(explanation) = item.get("explanation").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let title = item
+                        .get("article_title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Source article");
+                    let url = item
+                        .get("article_url")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    section.push_str(&format!("\n\n- [{title}]({url})：{explanation}"));
+                }
+            }
+            Some(section)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!markdown.trim().is_empty()).then_some(markdown)
 }
 
 fn parse_mbti_analysis(value: &Value) -> Result<MbtiAnalysis, AiError> {
@@ -1013,8 +1081,9 @@ fn translation_from_output(
     output: &str,
     _document_kind: &str,
 ) -> Result<DocumentTranslation, AiError> {
+    let value = structured_output_value(output, "title")?;
     let translation: TranslationOutput =
-        serde_json::from_str(output).map_err(|_| AiError::unreadable_response())?;
+        serde_json::from_value(value).map_err(|_| AiError::unreadable_response())?;
     if translation.title.trim().is_empty()
         || translation.content.trim().is_empty()
         || translation.metadata.is_empty()
@@ -1029,8 +1098,9 @@ fn translation_from_output(
 }
 
 fn metadata_from_output(output: &str, _document_kind: &str) -> Result<DocumentMetadata, AiError> {
+    let value = structured_output_value(output, "inferred_lang")?;
     let output: MetadataOutput =
-        serde_json::from_str(output).map_err(|_| AiError::unreadable_response())?;
+        serde_json::from_value(value).map_err(|_| AiError::unreadable_response())?;
     let inferred_language = output.inferred_lang;
     let inferred_language = normalize_language_tag(&inferred_language)
         .filter(|language| language != "und")
@@ -1222,7 +1292,11 @@ async fn request_output(
     input: &str,
 ) -> Result<AiResponse<String>, AiError> {
     let endpoint = format!("{}/responses", credentials.base_url.trim_end_matches('/'));
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(10 * 60))
+        .build()?;
+    let response = client
         .post(endpoint)
         .bearer_auth(&credentials.api_key)
         .json(&request_body(&credentials.model, instructions, input))
@@ -1236,7 +1310,7 @@ async fn request_output(
         });
     }
     let body = response.text().await?;
-    let value = output_text_from_sse(&body).ok_or_else(|| AiError::Rejected {
+    let value = output_text_from_response(&body).ok_or_else(|| AiError::Rejected {
         message: format!(
             "AI response contained no text output events: {}",
             sse_event_types(&body)
@@ -1274,14 +1348,81 @@ fn request_body(model: &str, instructions: &str, input: &str) -> serde_json::Val
 }
 
 fn output_text_from_sse(sse: &str) -> Option<String> {
-    let output = sse
+    let events = sse
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
-        .filter_map(|data| serde_json::from_str::<ResponsesOutputTextDone>(data.trim()).ok())
-        .filter(|event| event.kind == "response.output_text.done")
-        .filter_map(|event| event.text)
+        .filter_map(|data| serde_json::from_str::<Value>(data.trim()).ok())
+        .collect::<Vec<_>>();
+    let output = events
+        .iter()
+        .filter_map(|event| {
+            (event.get("type").and_then(Value::as_str) == Some("response.output_text.done"))
+                .then(|| event.get("text").and_then(Value::as_str))
+                .flatten()
+        })
+        .collect::<String>();
+    if !output.trim().is_empty() {
+        return Some(output);
+    }
+    let output = events
+        .iter()
+        .filter_map(|event| {
+            (event.get("type").and_then(Value::as_str) == Some("response.output_item.done"))
+                .then(|| event.get("item"))
+                .flatten()
+                .and_then(output_text_from_item)
+        })
+        .collect::<String>();
+    if !output.trim().is_empty() {
+        return Some(output);
+    }
+    let output = events
+        .iter()
+        .filter_map(|event| {
+            (event.get("type").and_then(Value::as_str) == Some("response.completed"))
+                .then(|| event.get("response"))
+                .flatten()
+                .and_then(|response| response.get("output"))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(output_text_from_item)
+                        .collect::<String>()
+                })
+        })
         .collect::<String>();
     (!output.trim().is_empty()).then_some(output)
+}
+
+fn output_text_from_response(body: &str) -> Option<String> {
+    output_text_from_sse(body).or_else(|| {
+        serde_json::from_str::<Value>(body)
+            .ok()
+            .and_then(|response| {
+                let items = response.get("output")?.as_array()?;
+                Some(
+                    items
+                        .iter()
+                        .filter_map(output_text_from_item)
+                        .collect::<String>(),
+                )
+            })
+            .filter(|output| !output.trim().is_empty())
+    })
+}
+
+fn output_text_from_item(item: &Value) -> Option<String> {
+    item.get("content")
+        .and_then(Value::as_array)
+        .map(|content| {
+            content
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<String>()
+        })
+        .filter(|output| !output.trim().is_empty())
 }
 
 fn sse_event_types(sse: &str) -> String {
@@ -1315,9 +1456,10 @@ mod tests {
 
     use super::{
         AiTask, ProfileSummaryPatch, metadata_from_output, metadata_instructions,
-        openai_lb_request_id, output_text_from_sse, profile_summary_from_output,
-        profile_summary_from_output_with_articles, profile_summary_instructions, request_body,
-        system_prompt, translation_from_output, translation_instructions,
+        openai_lb_request_id, output_text_from_response, output_text_from_sse,
+        profile_summary_from_output, profile_summary_from_output_with_articles,
+        profile_summary_instructions, request_body, structured_output_value, system_prompt,
+        translation_from_output, translation_instructions,
     };
     use crate::db::PublishedArticle;
 
@@ -1439,6 +1581,32 @@ mod tests {
     }
 
     #[test]
+    fn extracts_output_text_from_output_item_events_when_done_text_is_missing() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"fallback\"}]}}\n\n",
+            "data: {\"type\":\"response.completed\"}\n\n"
+        );
+
+        assert_eq!(output_text_from_sse(sse).as_deref(), Some("fallback"));
+    }
+
+    #[test]
+    fn extracts_output_text_from_completed_response_when_item_events_are_missing() {
+        let sse = "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"completed\"}]}]}}\n\n";
+
+        assert_eq!(output_text_from_sse(sse).as_deref(), Some("completed"));
+    }
+
+    #[test]
+    fn extracts_output_text_from_a_non_streaming_response() {
+        let response = r#"{"output":[{"type":"message","content":[{"type":"output_text","text":"fallback"}]}]}"#;
+        assert_eq!(
+            output_text_from_response(response).as_deref(),
+            Some("fallback")
+        );
+    }
+
+    #[test]
     fn requires_a_complete_structured_translation() {
         let translation = translation_from_output(
             r##"{"title":"Translated title","content":"# Translated\n\n- [x] Done","metadata":{"description":"Translated description","summary":"Translated summary","short_summary":"Translated short summary","tags":["CTX"],"inferred_date":"","inferred_lang":"en-US","key_points":["Done"],"audience":"Readers","personality_analysis":"Writing patterns"}}"##,
@@ -1456,6 +1624,31 @@ mod tests {
         );
         assert!(translation_from_output(r##"{"title":"No metadata","content":"# Content","metadata":{"inferred_lang":"en-US"}}"##, "article").is_err());
         assert!(translation_from_output("not JSON", "article").is_err());
+    }
+
+    #[test]
+    fn accepts_fenced_and_wrapped_structured_outputs() {
+        let translation = translation_from_output(
+            r##"```json
+{"translation":{"title":"Translated title","content":"# Translated","metadata":{"inferred_lang":"en-US","description":"Translated"}}}
+```"##,
+            "article",
+        )
+        .unwrap();
+        assert_eq!(translation.title, "Translated title");
+        let metadata = metadata_from_output(
+            r##"```json
+{"metadata":{"inferred_lang":"ja-jp","description":"A summary"}}
+```"##,
+            "article",
+        )
+        .unwrap();
+        assert_eq!(metadata.inferred_language, "ja-JP");
+        assert_eq!(
+            structured_output_value(r##"{"result":{"inferred_lang":"en-US"}}"##, "inferred_lang")
+                .unwrap()["inferred_lang"],
+            "en-US"
+        );
     }
 
     #[test]
@@ -1557,6 +1750,29 @@ mod tests {
             .is_ok()
         );
         assert!(profile_summary_from_output("{}", "profile_mbti").is_err());
+    }
+
+    #[test]
+    fn accepts_structured_markdown_profile_summaries() {
+        let experience = profile_summary_from_output(
+            r##"{"experience_summary":{"markdown":"# Experience"}}"##,
+            "profile_experience",
+        )
+        .unwrap();
+        assert!(matches!(
+            experience,
+            super::ProfileSummaryPatch::Experience(value) if value == "# Experience"
+        ));
+        let motivations = profile_summary_from_output(
+            r##"{"unconscious_motivations":{"interpretations":[{"theme":"A theme","interpretation":"A tentative interpretation."}]}}"##,
+            "profile_motivations",
+        )
+        .unwrap();
+        assert!(matches!(
+            motivations,
+            super::ProfileSummaryPatch::Motivations(value)
+                if value.contains("### A theme") && value.contains("A tentative interpretation.")
+        ));
     }
 
     #[test]
