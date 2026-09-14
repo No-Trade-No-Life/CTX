@@ -941,7 +941,7 @@ pub async fn run_worker(database: Database) {
         }
         match database.claim_next_ai_request() {
             Ok(Some(request)) => {
-                let result = process_ai_request(&database, &request).await;
+                let result = process_ai_request_with_retry(&database, &request).await;
                 let completion = match result {
                     Ok(completed) => database.complete_ai_request(
                         &request.id,
@@ -965,6 +965,52 @@ pub async fn run_worker(database: Database) {
             }
         }
     }
+}
+
+async fn process_ai_request_with_retry(
+    database: &Database,
+    request: &AiRequest,
+) -> Result<AiRequestCompletion, AiRequestFailure> {
+    const MAX_ATTEMPTS: usize = 3;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match process_ai_request(database, request).await {
+            Ok(completion) => return Ok(completion),
+            Err(failure) if attempt < MAX_ATTEMPTS && is_retryable_failure(&failure.message) => {
+                let delay_seconds = 5 * attempt as u64;
+                eprintln!(
+                    "CTX retrying AI request {} after transient failure (attempt {attempt}/{MAX_ATTEMPTS}): {}",
+                    request.id, failure.message
+                );
+                tokio::time::sleep(Duration::from_secs(delay_seconds)).await;
+            }
+            Err(failure) => return Err(failure),
+        }
+    }
+
+    unreachable!("the bounded AI request retry loop always returns")
+}
+
+fn is_retryable_failure(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "could not be reached",
+        "overloaded",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "try again later",
+        "temporarily unavailable",
+        "service unavailable",
+        "status 408",
+        "status 429",
+        "status 500",
+        "status 502",
+        "status 503",
+        "status 504",
+    ]
+    .into_iter()
+    .any(|marker| message.contains(marker))
 }
 
 async fn process_ai_request(
@@ -1222,7 +1268,16 @@ fn translation_from_output(
         || translation.content.trim().is_empty()
         || translation.metadata.is_empty()
     {
-        return Err(AiError::unreadable_response());
+        return Err(AiError::Rejected {
+            message: format!(
+                "translation response missing required fields (title_bytes={}, content_bytes={}, metadata_empty={}): {}",
+                translation.title.len(),
+                translation.content.len(),
+                translation.metadata.is_empty(),
+                response_preview(output)
+            ),
+            openai_lb_request_id: None,
+        });
     }
     Ok(DocumentTranslation {
         title: translation.title,
@@ -1628,11 +1683,12 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AiTask, ProfileSummaryPatch, metadata_from_output, metadata_instructions,
-        openai_lb_request_id, output_text_from_response, output_text_from_sse,
-        profile_summary_from_output, profile_summary_from_output_with_articles,
-        profile_summary_instructions, request_body, response_error_message,
-        structured_output_value, system_prompt, translation_from_output, translation_instructions,
+        AiTask, ProfileSummaryPatch, is_retryable_failure, metadata_from_output,
+        metadata_instructions, openai_lb_request_id, output_text_from_response,
+        output_text_from_sse, profile_summary_from_output,
+        profile_summary_from_output_with_articles, profile_summary_instructions, request_body,
+        response_error_message, structured_output_value, system_prompt, translation_from_output,
+        translation_instructions,
     };
     use crate::db::PublishedArticle;
 
@@ -1714,6 +1770,22 @@ mod tests {
                 }]
             })
         );
+    }
+
+    #[test]
+    fn retries_transient_upstream_failures_only() {
+        assert!(is_retryable_failure(
+            "the configured AI service rejected the request: Our servers are currently overloaded"
+        ));
+        assert!(is_retryable_failure(
+            "the configured AI service could not be reached"
+        ));
+        assert!(!is_retryable_failure(
+            "the configured AI service returned an unreadable response"
+        ));
+        assert!(!is_retryable_failure(
+            "source metadata is still being extracted"
+        ));
     }
 
     #[test]
