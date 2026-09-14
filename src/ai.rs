@@ -1342,10 +1342,12 @@ async fn request_output(
     }
     let body = response.text().await?;
     let value = output_text_from_response(&body).ok_or_else(|| AiError::Rejected {
-        message: format!(
-            "AI response contained no text output events: {}",
-            sse_event_types(&body)
-        ),
+        message: response_error_message(&body).unwrap_or_else(|| {
+            format!(
+                "AI response contained no text output events: {}",
+                sse_event_types(&body)
+            )
+        }),
         openai_lb_request_id: openai_lb_request_id.clone(),
     })?;
     Ok(AiResponse {
@@ -1456,6 +1458,24 @@ fn output_text_from_item(item: &Value) -> Option<String> {
         .filter(|output| !output.trim().is_empty())
 }
 
+fn response_error_message(sse: &str) -> Option<String> {
+    sse.lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|data| serde_json::from_str::<Value>(data.trim()).ok())
+        .filter_map(|event| {
+            [
+                event.pointer("/error/message"),
+                event.pointer("/response/error/message"),
+                event.get("message"),
+            ]
+            .into_iter()
+            .flatten()
+            .find_map(Value::as_str)
+            .map(str::to_owned)
+        })
+        .find(|message| !message.trim().is_empty())
+}
+
 fn sse_event_types(sse: &str) -> String {
     let mut kinds = BTreeSet::new();
     for data in sse.lines().filter_map(|line| line.strip_prefix("data:")) {
@@ -1489,8 +1509,8 @@ mod tests {
         AiTask, ProfileSummaryPatch, metadata_from_output, metadata_instructions,
         openai_lb_request_id, output_text_from_response, output_text_from_sse,
         profile_summary_from_output, profile_summary_from_output_with_articles,
-        profile_summary_instructions, request_body, structured_output_value, system_prompt,
-        translation_from_output, translation_instructions,
+        profile_summary_instructions, request_body, response_error_message,
+        structured_output_value, system_prompt, translation_from_output, translation_instructions,
     };
     use crate::db::PublishedArticle;
 
@@ -1609,6 +1629,16 @@ mod tests {
         );
 
         assert_eq!(output_text_from_sse(sse), None);
+    }
+
+    #[test]
+    fn extracts_response_failure_messages() {
+        let sse = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"context limit\"}}}\n\n";
+
+        assert_eq!(
+            response_error_message(sse).as_deref(),
+            Some("context limit")
+        );
     }
 
     #[test]
