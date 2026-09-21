@@ -13,6 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use reqwest::Url;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -361,19 +362,28 @@ async fn update_ai_configuration(
     Json(input): Json<AiConfigurationInput>,
 ) -> Result<Json<AiConfiguration>, ApiError> {
     Actor::from_principal(&state.database, &principal)?.assert_root()?;
-    if !input.base_url.starts_with("https://openai.ntnl.io") {
-        return Err(ApiError::bad_request("AI base URL must use openai.ntnl.io"));
-    }
+    let base_url = validate_ai_base_url(&input.base_url)?;
     if input.model.trim().is_empty() {
         return Err(ApiError::bad_request("AI model is required"));
     }
     let configuration = state.database.update_ai_configuration(
-        input.base_url.trim_end_matches('/'),
+        &base_url,
         input.model.trim(),
         input.api_key.as_deref(),
     )?;
     state.database.requeue_failed_ai_requests()?;
     Ok(Json(configuration))
+}
+
+fn validate_ai_base_url(value: &str) -> Result<String, ApiError> {
+    let url = Url::parse(value.trim())
+        .map_err(|_| ApiError::bad_request("AI base URL must be a valid HTTP(S) URL"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(ApiError::bad_request(
+            "AI base URL must be a valid HTTP(S) URL",
+        ));
+    }
+    Ok(value.trim().trim_end_matches('/').to_owned())
 }
 
 async fn list_ai_requests(
@@ -815,7 +825,7 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::{
         AppState, image_content_type, is_media_id, public_media, requested_language,
-        source_language_or_und, store_media,
+        source_language_or_und, store_media, validate_ai_base_url,
     };
     use crate::{db::Database, resources::ResourceMonitor};
     use axum::{
@@ -838,6 +848,24 @@ mod tests {
         assert_eq!(source_language_or_und(None).unwrap(), "und");
         assert_eq!(source_language_or_und(Some("ja-jp")).unwrap(), "ja-JP");
         assert!(source_language_or_und(Some("Japanese")).is_err());
+    }
+
+    #[test]
+    fn accepts_arbitrary_http_base_urls_and_normalizes_trailing_slashes() {
+        assert_eq!(
+            validate_ai_base_url(" https://ai.example.test/v1/// ").unwrap(),
+            "https://ai.example.test/v1"
+        );
+        assert_eq!(
+            validate_ai_base_url("http://127.0.0.1:11434/v1").unwrap(),
+            "http://127.0.0.1:11434/v1"
+        );
+    }
+
+    #[test]
+    fn rejects_non_http_base_urls() {
+        assert!(validate_ai_base_url("ftp://ai.example.test/v1").is_err());
+        assert!(validate_ai_base_url("not a url").is_err());
     }
 
     #[test]
