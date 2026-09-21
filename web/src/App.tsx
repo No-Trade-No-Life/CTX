@@ -1354,7 +1354,6 @@ function PublicationTimeEditor({
     },
     onError: showError,
   })
-
   if (publicationTime.isPending)
     return <Skeleton className="mt-8 h-24 w-full" />
   if (publicationTime.error) return <PageError error={publicationTime.error} />
@@ -3436,6 +3435,24 @@ function AdministrationPage({ token }: { token: string }) {
     onSuccess: () => toast.success(t("aiConfigurationSaved")),
     onError: showError,
   })
+  const test = useMutation({
+    mutationFn: () =>
+      request<{ request_id: string | null }>("/api/v1/admin/ai/test", token, {
+        method: "POST",
+        body: JSON.stringify({
+          base_url: baseUrl ?? aiConfiguration.data?.base_url ?? "",
+          model: model ?? aiConfiguration.data?.model ?? "",
+          api_key: apiKey || undefined,
+        }),
+      }),
+    onSuccess: (result) =>
+      toast.success(
+        result.request_id
+          ? `${t("aiConfigurationTestSucceeded")} (${result.request_id})`
+          : t("aiConfigurationTestSucceeded")
+      ),
+    onError: showError,
+  })
 
   const configuration = aiConfiguration.data
 
@@ -3498,24 +3515,45 @@ function AdministrationPage({ token }: { token: string }) {
               <FieldDescription>{t("apiKeyDescription")}</FieldDescription>
             </Field>
             <Field>
-              <Button
-                disabled={
-                  update.isPending ||
-                  !(baseUrl ?? configuration?.base_url) ||
-                  !(model ?? configuration?.model)
-                }
-                onClick={() => update.mutate()}
-              >
-                {update.isPending ? (
-                  <LoaderCircleIcon
-                    className="animate-spin"
-                    data-icon="inline-start"
-                  />
-                ) : (
-                  <SaveIcon data-icon="inline-start" />
-                )}
-                {t("saveAiConfiguration")}
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  disabled={
+                    update.isPending ||
+                    test.isPending ||
+                    !(baseUrl ?? configuration?.base_url) ||
+                    !(model ?? configuration?.model)
+                  }
+                  onClick={() => update.mutate()}
+                >
+                  {update.isPending ? (
+                    <LoaderCircleIcon
+                      className="animate-spin"
+                      data-icon="inline-start"
+                    />
+                  ) : (
+                    <SaveIcon data-icon="inline-start" />
+                  )}
+                  {t("saveAiConfiguration")}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={
+                    update.isPending ||
+                    test.isPending ||
+                    !(baseUrl ?? configuration?.base_url) ||
+                    !(model ?? configuration?.model)
+                  }
+                  onClick={() => test.mutate()}
+                >
+                  {test.isPending && (
+                    <LoaderCircleIcon
+                      className="animate-spin"
+                      data-icon="inline-start"
+                    />
+                  )}
+                  {t("testAiConfiguration")}
+                </Button>
+              </div>
             </Field>
           </FieldGroup>
         </CardContent>

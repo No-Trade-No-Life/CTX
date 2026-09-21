@@ -84,6 +84,7 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
             "/admin/ai",
             get(get_ai_configuration).put(update_ai_configuration),
         )
+        .route("/admin/ai/test", post(test_ai_configuration))
         .route("/admin/ai/requests", get(list_ai_requests))
         .route("/admin/system-resources", get(system_resources))
         .route_layer(auth);
@@ -375,6 +376,34 @@ async fn update_ai_configuration(
     Ok(Json(configuration))
 }
 
+async fn test_ai_configuration(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Json(input): Json<AiConfigurationInput>,
+) -> Result<Json<AiConfigurationTest>, ApiError> {
+    Actor::from_principal(&state.database, &principal)?.assert_root()?;
+    let base_url = validate_ai_base_url(&input.base_url)?;
+    let model = input.model.trim();
+    if model.is_empty() {
+        return Err(ApiError::bad_request("AI model is required"));
+    }
+    let saved = state
+        .database
+        .ai_credentials()?
+        .ok_or_else(|| ApiError::unavailable("AI API key is not configured"))?;
+    let api_key = input
+        .api_key
+        .filter(|value| !value.is_empty())
+        .unwrap_or(saved.api_key);
+    let request_id = ai::test_configuration(&crate::db::AiCredentials {
+        base_url,
+        model: model.to_owned(),
+        api_key,
+    })
+    .await?;
+    Ok(Json(AiConfigurationTest { request_id }))
+}
+
 fn validate_ai_base_url(value: &str) -> Result<String, ApiError> {
     let url = Url::parse(value.trim())
         .map_err(|_| ApiError::bad_request("AI base URL must be a valid HTTP(S) URL"))?;
@@ -634,6 +663,11 @@ struct AiConfigurationInput {
     base_url: String,
     model: String,
     api_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AiConfigurationTest {
+    request_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
