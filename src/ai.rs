@@ -220,6 +220,16 @@ pub async fn run(
     })
 }
 
+pub async fn test_configuration(credentials: &AiCredentials) -> Result<Option<String>, AiError> {
+    request_output(
+        credentials,
+        "Respond with exactly the word OK.",
+        "Configuration test.",
+    )
+    .await
+    .map(|response| response.openai_lb_request_id)
+}
+
 async fn translate_document(
     credentials: &AiCredentials,
     document: &DocumentDetail,

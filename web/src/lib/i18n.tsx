@@ -162,6 +162,8 @@ const englishCopy = defineCopy({
   apiKeyDescription:
     "Only root can update this secret. CTX will never echo it back.",
   saveAiConfiguration: "Save AI configuration",
+  testAiConfiguration: "Test configuration",
+  aiConfigurationTestSucceeded: "AI configuration test succeeded",
   aiRequestsTitle: "AI request audit",
   aiRequestsDescription:
     "Every metadata extraction, independent profile summary, and Markdown translation is recorded here.",
@@ -454,6 +456,8 @@ const chineseCopy: Copy = {
   apiKeyPlaceholder: "留空即可保留已加密的密钥",
   apiKeyDescription: "只有根管理员可以更新此密钥。CTX 不会将其返回。",
   saveAiConfiguration: "保存 AI 配置",
+  testAiConfiguration: "测试配置",
+  aiConfigurationTestSucceeded: "AI 配置测试成功",
   aiRequestsTitle: "AI 请求审计",
   aiRequestsDescription:
     "元信息提取、独立主页总结和 Markdown 翻译都会记录在这里。",
@@ -739,6 +743,8 @@ const japaneseCopy: Copy = {
   apiKeyDescription:
     "この秘密情報を更新できるのはルート管理者だけです。CTX は再表示しません。",
   saveAiConfiguration: "AI 設定を保存",
+  testAiConfiguration: "設定をテスト",
+  aiConfigurationTestSucceeded: "AI 設定のテストに成功しました",
   aiRequestsTitle: "AI リクエスト監査",
   aiRequestsDescription:
     "メタデータ抽出、独立したプロフィール要約、Markdown 翻訳をすべて記録します。",
@@ -1032,6 +1038,8 @@ const spanishCopy: Copy = {
   apiKeyDescription:
     "Solo la raíz puede actualizar este secreto. CTX nunca lo mostrará de nuevo.",
   saveAiConfiguration: "Guardar configuración de IA",
+  testAiConfiguration: "Probar configuración",
+  aiConfigurationTestSucceeded: "La prueba de configuración de IA fue exitosa",
   aiRequestsTitle: "Auditoría de solicitudes de IA",
   aiRequestsDescription:
     "Cada extracción de metadatos, resumen de perfil independiente y traducción Markdown se registra aquí.",
