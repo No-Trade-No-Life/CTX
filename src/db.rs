@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::Utc;
+use fractional_index::FractionalIndex;
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +19,8 @@ const CURRENT_TABLES_SQL: &str = "
         status TEXT NOT NULL CHECK(status IN ('draft', 'published')),
         visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private', 'public')),
         document_kind TEXT NOT NULL DEFAULT 'article' CHECK(document_kind IN ('article', 'profile')),
+        parent_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
+        sort_key TEXT NOT NULL DEFAULT '',
         metadata_json TEXT NOT NULL,
         current_revision_id TEXT NOT NULL,
         published_revision_id TEXT,
@@ -93,6 +96,7 @@ const CURRENT_TABLES_SQL: &str = "
 
 const CURRENT_INDEXES_SQL: &str = "
     CREATE INDEX IF NOT EXISTS documents_owner_idx ON documents(owner_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS documents_tree_idx ON documents(owner_id, parent_id, sort_key);
     CREATE INDEX IF NOT EXISTS documents_public_idx ON documents(visibility, status, published_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS documents_owner_profile_unique ON documents(owner_id) WHERE document_kind = 'profile';
     CREATE INDEX IF NOT EXISTS document_revisions_document_idx ON document_revisions(document_id, created_at DESC);
@@ -103,6 +107,8 @@ const CURRENT_INDEXES_SQL: &str = "
     CREATE INDEX IF NOT EXISTS ai_requests_document_idx ON ai_requests(document_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS document_comments_document_idx ON document_comments(document_id, source_revision_id, language, created_at, id);
 ";
+
+const DOCUMENT_DETAIL_SQL: &str = "SELECT d.id, d.owner_id, d.title, d.source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, d.parent_id, d.sort_key, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id AND r.document_id = d.id WHERE d.id = ?1";
 
 #[derive(Clone)]
 pub struct Database {
@@ -129,6 +135,8 @@ pub enum DatabaseError {
     Json(#[from] serde_json::Error),
     #[error("database migration failed: {0}")]
     Migration(String),
+    #[error("stored document order key is invalid")]
+    InvalidOrderKey,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -147,6 +155,8 @@ pub struct Document {
     pub published_source_language: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub parent_id: Option<String>,
+    pub sort_key: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -163,6 +173,7 @@ pub struct DocumentRevision {
 pub struct DocumentDetail {
     pub document: Document,
     pub revision: DocumentRevision,
+    pub descendant_count: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -387,6 +398,28 @@ pub struct NewDocument<'a> {
     pub source_language: &'a str,
     pub content: &'a str,
     pub message: &'a str,
+    pub parent_id: Option<&'a str>,
+}
+
+#[derive(Debug)]
+pub enum CreateDocumentOutcome {
+    Created(Box<DocumentDetail>),
+    MissingParent,
+    InvalidParent,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DocumentMove<'a> {
+    pub id: &'a str,
+    pub parent_id: Option<&'a str>,
+    pub after_id: Option<&'a str>,
+}
+
+#[derive(Debug)]
+pub enum MoveDocumentOutcome {
+    Moved(Box<DocumentDetail>),
+    Missing,
+    InvalidTarget,
 }
 
 #[derive(Clone, Debug)]
@@ -450,6 +483,7 @@ impl Database {
         )?;
         migrate_legacy_context_schema(&mut connection)?;
         add_direct_document_columns_if_needed(&connection)?;
+        add_document_tree_columns_if_needed(&connection)?;
         connection.execute_batch(CURRENT_TABLES_SQL)?;
         migrate_ai_request_task_constraint(&mut connection)?;
         add_ai_request_openai_lb_request_id_if_needed(&connection)?;
@@ -555,7 +589,7 @@ impl Database {
     pub fn create_document(
         &self,
         input: &NewDocument<'_>,
-    ) -> Result<DocumentDetail, DatabaseError> {
+    ) -> Result<CreateDocumentOutcome, DatabaseError> {
         let document_id = Uuid::new_v4().to_string();
         let revision = DocumentRevision {
             id: Uuid::new_v4().to_string(),
@@ -565,6 +599,23 @@ impl Database {
             author_id: input.author_id.to_owned(),
             created_at: now(),
         };
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        if let Some(parent_id) = input.parent_id {
+            let parent = transaction
+                .query_row(
+                    "SELECT owner_id, document_kind FROM documents WHERE id = ?1",
+                    [parent_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let Some((owner_id, document_kind)) = parent else {
+                return Ok(CreateDocumentOutcome::MissingParent);
+            };
+            if owner_id != input.author_id || document_kind != "article" {
+                return Ok(CreateDocumentOutcome::InvalidParent);
+            }
+        }
         let document = Document {
             id: document_id,
             owner_id: input.author_id.to_owned(),
@@ -579,25 +630,29 @@ impl Database {
             published_source_language: None,
             created_at: revision.created_at,
             updated_at: revision.created_at,
+            parent_id: input.parent_id.map(str::to_owned),
+            sort_key: append_document_sort_key(&transaction, input.author_id, input.parent_id)?,
         };
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
         transaction.execute(
-            "INSERT INTO documents(id, owner_id, title, source_language, status, visibility, document_kind, metadata_json, current_revision_id, published_revision_id, published_source_language, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)",
-            params![document.id, document.owner_id, document.title, document.source_language, document.status, document.visibility, document.kind, document.metadata.to_string(), document.current_revision_id, document.created_at, document.updated_at],
+            "INSERT INTO documents(id, owner_id, title, source_language, status, visibility, document_kind, parent_id, sort_key, metadata_json, current_revision_id, published_revision_id, published_source_language, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, NULL, ?12, ?13)",
+            params![document.id, document.owner_id, document.title, document.source_language, document.status, document.visibility, document.kind, document.parent_id, document.sort_key, document.metadata.to_string(), document.current_revision_id, document.created_at, document.updated_at],
         )?;
         transaction.execute(
             "INSERT INTO document_revisions(id, document_id, content, message, author_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![revision.id, revision.document_id, revision.content, revision.message, revision.author_id, revision.created_at],
         )?;
         transaction.commit()?;
-        Ok(DocumentDetail { document, revision })
+        Ok(CreateDocumentOutcome::Created(Box::new(DocumentDetail {
+            document,
+            revision,
+            descendant_count: 0,
+        })))
     }
 
     pub fn list_documents(&self, owner_id: &str) -> Result<Vec<Document>, DatabaseError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT id, owner_id, title, source_language, status, visibility, document_kind, metadata_json, current_revision_id, published_revision_id, published_source_language, created_at, updated_at FROM documents WHERE owner_id = ?1 ORDER BY updated_at DESC, id DESC",
+            "SELECT id, owner_id, title, source_language, status, visibility, document_kind, metadata_json, current_revision_id, published_revision_id, published_source_language, created_at, updated_at, parent_id, sort_key FROM documents WHERE owner_id = ?1 ORDER BY updated_at DESC, id DESC",
         )?;
         Ok(statement
             .query_map([owner_id], document_from_row)?
@@ -609,7 +664,7 @@ impl Database {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let existing = transaction
             .query_row(
-                "SELECT d.id, d.owner_id, d.title, d.source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id AND r.document_id = d.id WHERE d.owner_id = ?1 AND d.document_kind = 'profile'",
+                "SELECT d.id, d.owner_id, d.title, d.source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, d.parent_id, d.sort_key, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id AND r.document_id = d.id WHERE d.owner_id = ?1 AND d.document_kind = 'profile'",
                 [owner_id],
                 document_detail_from_row,
             )
@@ -642,29 +697,35 @@ impl Database {
             published_source_language: None,
             created_at,
             updated_at: created_at,
+            parent_id: None,
+            sort_key: append_document_sort_key(&transaction, owner_id, None)?,
         };
         transaction.execute(
-            "INSERT INTO documents(id, owner_id, title, source_language, status, visibility, document_kind, metadata_json, current_revision_id, published_revision_id, published_source_language, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)",
-            params![document.id, document.owner_id, document.title, document.source_language, document.status, document.visibility, document.kind, document.metadata.to_string(), document.current_revision_id, document.created_at, document.updated_at],
+            "INSERT INTO documents(id, owner_id, title, source_language, status, visibility, document_kind, parent_id, sort_key, metadata_json, current_revision_id, published_revision_id, published_source_language, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, NULL, NULL, ?11, ?12)",
+            params![document.id, document.owner_id, document.title, document.source_language, document.status, document.visibility, document.kind, document.sort_key, document.metadata.to_string(), document.current_revision_id, document.created_at, document.updated_at],
         )?;
         transaction.execute(
             "INSERT INTO document_revisions(id, document_id, content, message, author_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![revision.id, revision.document_id, revision.content, revision.message, revision.author_id, revision.created_at],
         )?;
         transaction.commit()?;
-        Ok(DocumentDetail { document, revision })
+        Ok(DocumentDetail {
+            document,
+            revision,
+            descendant_count: 0,
+        })
     }
 
     pub fn get_document(&self, id: &str) -> Result<Option<DocumentDetail>, DatabaseError> {
         let connection = self.connection()?;
-        connection
-            .query_row(
-                "SELECT d.id, d.owner_id, d.title, d.source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id AND r.document_id = d.id WHERE d.id = ?1",
-                [id],
-                document_detail_from_row,
-            )
-            .optional()
-            .map_err(DatabaseError::Sqlite)
+        let document = connection
+            .query_row(DOCUMENT_DETAIL_SQL, [id], document_detail_from_row)
+            .optional()?;
+        let Some(mut document) = document else {
+            return Ok(None);
+        };
+        document.descendant_count = count_descendants(&connection, id)?;
+        Ok(Some(document))
     }
 
     pub fn delete_document(&self, id: &str) -> Result<bool, DatabaseError> {
@@ -672,6 +733,64 @@ impl Database {
             .connection()?
             .execute("DELETE FROM documents WHERE id = ?1", [id])?
             == 1)
+    }
+
+    pub fn move_document(
+        &self,
+        input: &DocumentMove<'_>,
+    ) -> Result<MoveDocumentOutcome, DatabaseError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let moving = transaction
+            .query_row(
+                "SELECT owner_id, document_kind FROM documents WHERE id = ?1",
+                [input.id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((owner_id, document_kind)) = moving else {
+            return Ok(MoveDocumentOutcome::Missing);
+        };
+        if document_kind != "article" {
+            return Ok(MoveDocumentOutcome::InvalidTarget);
+        }
+        if let Some(parent_id) = input.parent_id {
+            let parent = transaction
+                .query_row(
+                    "SELECT owner_id, document_kind FROM documents WHERE id = ?1",
+                    [parent_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let Some((parent_owner_id, parent_kind)) = parent else {
+                return Ok(MoveDocumentOutcome::InvalidTarget);
+            };
+            if parent_owner_id != owner_id
+                || parent_kind != "article"
+                || is_descendant(&transaction, input.id, parent_id)?
+            {
+                return Ok(MoveDocumentOutcome::InvalidTarget);
+            }
+        }
+        let Some(sort_key) = sibling_sort_key(
+            &transaction,
+            &owner_id,
+            input.parent_id,
+            input.after_id,
+            input.id,
+        )?
+        else {
+            return Ok(MoveDocumentOutcome::InvalidTarget);
+        };
+        transaction.execute(
+            "UPDATE documents SET parent_id = ?2, sort_key = ?3 WHERE id = ?1",
+            params![input.id, input.parent_id, sort_key],
+        )?;
+        let mut document =
+            transaction.query_row(DOCUMENT_DETAIL_SQL, [input.id], document_detail_from_row)?;
+        document.descendant_count = count_descendants(&transaction, input.id)?;
+        transaction.commit()?;
+        Ok(MoveDocumentOutcome::Moved(Box::new(document)))
     }
 
     pub fn publication_time(&self, id: &str) -> Result<Option<i64>, DatabaseError> {
@@ -703,6 +822,7 @@ impl Database {
         let Some(existing) = self.get_document(input.id)? else {
             return Ok(None);
         };
+        let descendant_count = existing.descendant_count;
         let revision = DocumentRevision {
             id: Uuid::new_v4().to_string(),
             document_id: existing.document.id.clone(),
@@ -730,7 +850,11 @@ impl Database {
             updated_at: revision.created_at,
             ..existing.document
         };
-        Ok(Some(DocumentDetail { document, revision }))
+        Ok(Some(DocumentDetail {
+            document,
+            revision,
+            descendant_count,
+        }))
     }
 
     pub fn publish_document(
@@ -1180,7 +1304,7 @@ impl Database {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT d.id, d.owner_id, d.published_title, d.published_source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = ?2 AND r.document_id = d.id WHERE d.id = ?1 AND d.status = 'published' AND d.visibility = 'public' AND d.published_revision_id = ?2 AND d.published_title IS NOT NULL AND d.published_source_language IS NOT NULL",
+                "SELECT d.id, d.owner_id, d.published_title, d.published_source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, d.parent_id, d.sort_key, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = ?2 AND r.document_id = d.id WHERE d.id = ?1 AND d.status = 'published' AND d.visibility = 'public' AND d.published_revision_id = ?2 AND d.published_title IS NOT NULL AND d.published_source_language IS NOT NULL",
                 params![document_id, source_revision_id],
                 document_detail_from_row,
             )
@@ -1960,6 +2084,66 @@ fn add_direct_document_columns_if_needed(connection: &Connection) -> Result<(), 
     Ok(())
 }
 
+fn add_document_tree_columns_if_needed(connection: &Connection) -> Result<(), DatabaseError> {
+    // COMPATIBILITY: databases created before the document tree lack the ordering columns.
+    // Remove after every supported deployed database has been upgraded; verify with
+    // PRAGMA table_info(documents) before removing this path.
+    if !table_exists(connection, "documents")?
+        || !table_has_column(connection, "documents", "owner_id")?
+    {
+        return Ok(());
+    }
+    for (column, definition) in [
+        (
+            "parent_id",
+            "TEXT REFERENCES documents(id) ON DELETE CASCADE",
+        ),
+        ("sort_key", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        if !table_has_column(connection, "documents", column)? {
+            connection.execute(
+                &format!("ALTER TABLE documents ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
+    backfill_document_sort_keys(connection)
+}
+
+fn backfill_document_sort_keys(connection: &Connection) -> Result<(), DatabaseError> {
+    let owners: Vec<String> = connection
+        .prepare("SELECT DISTINCT owner_id FROM documents WHERE sort_key = ''")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for owner_id in owners {
+        let mut last = connection
+            .query_row(
+                "SELECT sort_key FROM documents WHERE owner_id = ?1 AND sort_key != '' ORDER BY sort_key DESC LIMIT 1",
+                [&owner_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|key| parse_sort_key(&key))
+            .transpose()?;
+        let ids: Vec<String> = connection
+            .prepare("SELECT id FROM documents WHERE owner_id = ?1 AND sort_key = '' ORDER BY updated_at DESC, id DESC")?
+            .query_map([&owner_id], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        for id in ids {
+            let index = match &last {
+                Some(last) => FractionalIndex::new_after(last),
+                None => FractionalIndex::default(),
+            };
+            connection.execute(
+                "UPDATE documents SET sort_key = ?2 WHERE id = ?1",
+                params![id, index.to_string()],
+            )?;
+            last = Some(index);
+        }
+    }
+    Ok(())
+}
+
 fn backfill_published_source_languages(connection: &Connection) -> Result<(), DatabaseError> {
     // COMPATIBILITY: direct-document releases before v0.1.0-7 had immutable content snapshots
     // but no immutable source-language snapshot. Existing published rows receive `und` instead
@@ -1970,6 +2154,94 @@ fn backfill_published_source_languages(connection: &Connection) -> Result<(), Da
         [],
     )?;
     Ok(())
+}
+
+fn append_document_sort_key(
+    connection: &Connection,
+    owner_id: &str,
+    parent_id: Option<&str>,
+) -> Result<String, DatabaseError> {
+    let last: Option<String> = connection
+        .query_row(
+            "SELECT sort_key FROM documents WHERE owner_id = ?1 AND parent_id IS ?2 AND sort_key != '' ORDER BY sort_key DESC LIMIT 1",
+            params![owner_id, parent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let index = match last {
+        Some(key) => FractionalIndex::new_after(&parse_sort_key(&key)?),
+        None => FractionalIndex::default(),
+    };
+    Ok(index.to_string())
+}
+
+fn sibling_sort_key(
+    connection: &Connection,
+    owner_id: &str,
+    parent_id: Option<&str>,
+    after_id: Option<&str>,
+    moving_id: &str,
+) -> Result<Option<String>, DatabaseError> {
+    let children: Vec<(String, String)> = connection
+        .prepare("SELECT id, sort_key FROM documents WHERE owner_id = ?1 AND parent_id IS ?2 ORDER BY sort_key, id")?
+        .query_map(params![owner_id, parent_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    let after_position = match after_id {
+        None => None,
+        Some(after_id) if after_id != moving_id => {
+            match children.iter().position(|(id, _)| id == after_id) {
+                Some(position) => Some(position),
+                None => return Ok(None),
+            }
+        }
+        Some(_) => return Ok(None),
+    };
+    let (lower, upper_start) = match after_position {
+        Some(position) => (Some(parse_sort_key(&children[position].1)?), position + 1),
+        None => (None, 0),
+    };
+    let upper = children[upper_start..]
+        .iter()
+        .find(|(id, _)| id != moving_id)
+        .map(|(_, key)| parse_sort_key(key))
+        .transpose()?;
+    let index = match (lower, upper) {
+        (Some(lower), Some(upper)) => FractionalIndex::new_between(&lower, &upper),
+        (Some(lower), None) => Some(FractionalIndex::new_after(&lower)),
+        (None, Some(upper)) => Some(FractionalIndex::new_before(&upper)),
+        (None, None) => Some(FractionalIndex::default()),
+    };
+    Ok(index.map(|index| index.to_string()))
+}
+
+fn is_descendant(
+    connection: &Connection,
+    document_id: &str,
+    candidate_id: &str,
+) -> Result<bool, DatabaseError> {
+    connection
+        .query_row(
+            "WITH RECURSIVE subtree(id) AS (SELECT id FROM documents WHERE id = ?1 UNION ALL SELECT d.id FROM documents d JOIN subtree s ON d.parent_id = s.id) SELECT EXISTS(SELECT 1 FROM subtree WHERE id = ?2)",
+            params![document_id, candidate_id],
+            |row| row.get(0),
+        )
+        .map_err(DatabaseError::Sqlite)
+}
+
+fn count_descendants(connection: &Connection, document_id: &str) -> Result<i64, DatabaseError> {
+    connection
+        .query_row(
+            "WITH RECURSIVE subtree(id) AS (SELECT id FROM documents WHERE parent_id = ?1 UNION ALL SELECT d.id FROM documents d JOIN subtree s ON d.parent_id = s.id) SELECT COUNT(*) FROM subtree",
+            [document_id],
+            |row| row.get(0),
+        )
+        .map_err(DatabaseError::Sqlite)
+}
+
+fn parse_sort_key(key: &str) -> Result<FractionalIndex, DatabaseError> {
+    FractionalIndex::from_string(key).map_err(|_| DatabaseError::InvalidOrderKey)
 }
 
 fn table_exists(connection: &Connection, table: &str) -> Result<bool, DatabaseError> {
@@ -2104,6 +2376,8 @@ fn document_from_row(row: &Row<'_>) -> rusqlite::Result<Document> {
         published_source_language: row.get(10)?,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
+        parent_id: row.get(13)?,
+        sort_key: row.get(14)?,
     })
 }
 
@@ -2112,13 +2386,14 @@ fn document_detail_from_row(row: &Row<'_>) -> rusqlite::Result<DocumentDetail> {
     Ok(DocumentDetail {
         document,
         revision: DocumentRevision {
-            id: row.get(13)?,
-            document_id: row.get(14)?,
-            content: row.get(15)?,
-            message: row.get(16)?,
-            author_id: row.get(17)?,
-            created_at: row.get(18)?,
+            id: row.get(15)?,
+            document_id: row.get(16)?,
+            content: row.get(17)?,
+            message: row.get(18)?,
+            author_id: row.get(19)?,
+            created_at: row.get(20)?,
         },
+        descendant_count: 0,
     })
 }
 
@@ -2191,7 +2466,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        Database, DocumentSave, NewDocument, NewDocumentComment, PROFILE_SUMMARY_TASKS,
+        CreateDocumentOutcome, Database, Document, DocumentDetail, DocumentMove, DocumentSave,
+        MoveDocumentOutcome, NewDocument, NewDocumentComment, PROFILE_SUMMARY_TASKS,
         PublishedMetadata, table_has_column,
     };
 
@@ -2215,6 +2491,41 @@ mod tests {
         }
     }
 
+    fn create_document(database: &Database, input: &NewDocument<'_>) -> DocumentDetail {
+        match database.create_document(input).unwrap() {
+            CreateDocumentOutcome::Created(document) => *document,
+            outcome => panic!("unexpected create outcome: {outcome:?}"),
+        }
+    }
+
+    fn create_article(database: &Database, title: &str, parent_id: Option<&str>) -> DocumentDetail {
+        create_document(
+            database,
+            &NewDocument {
+                author_id: "author-a",
+                title,
+                source_language: "en-US",
+                content: "# Content",
+                message: "Created document",
+                parent_id,
+            },
+        )
+    }
+
+    fn ordered_titles(database: &Database, owner_id: &str, parent_id: Option<&str>) -> Vec<String> {
+        let mut documents: Vec<Document> = database
+            .list_documents(owner_id)
+            .unwrap()
+            .into_iter()
+            .filter(|document| document.parent_id.as_deref() == parent_id)
+            .collect();
+        documents.sort_by(|left, right| left.sort_key.cmp(&right.sort_key));
+        documents
+            .into_iter()
+            .map(|document| document.title)
+            .collect()
+    }
+
     #[test]
     fn documents_belong_to_their_owner_and_keep_published_revisions_immutable() {
         let directory = tempfile::tempdir().unwrap();
@@ -2226,15 +2537,17 @@ mod tests {
             .unwrap();
         assert_eq!(journal_mode, "wal");
 
-        let created = database
-            .create_document(&NewDocument {
+        let created = create_document(
+            &database,
+            &NewDocument {
                 author_id: "author-a",
                 title: "First note",
                 source_language: "zh-CN",
                 content: "# First note",
                 message: "Created document",
-            })
-            .unwrap();
+                parent_id: None,
+            },
+        );
         assert_eq!(created.document.owner_id, "author-a");
         assert!(database.list_documents("author-b").unwrap().is_empty());
 
@@ -2298,15 +2611,17 @@ mod tests {
     fn published_articles_accept_comments_and_keep_imported_publication_times() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path()).unwrap();
-        let article = database
-            .create_document(&NewDocument {
+        let article = create_document(
+            &database,
+            &NewDocument {
                 author_id: "author-a",
                 title: "Commented article",
                 source_language: "zh-CN",
                 content: "# Article\n\nA selected passage.",
                 message: "Created document",
-            })
-            .unwrap();
+                parent_id: None,
+            },
+        );
         assert_eq!(
             database
                 .update_publication_time(&article.document.id, 1_704_067_200)
@@ -2458,15 +2773,17 @@ mod tests {
             .complete_ai_request(&profile_request_id, "Initial profile metadata", None)
             .unwrap();
 
-        let article = database
-            .create_document(&NewDocument {
+        let article = create_document(
+            &database,
+            &NewDocument {
                 author_id: "author-a",
                 title: "An article",
                 source_language: "en-US",
                 content: "# Article",
                 message: "Created document",
-            })
-            .unwrap();
+                parent_id: None,
+            },
+        );
         database
             .publish_document(&article.document.id, &article.revision.id)
             .unwrap()
@@ -2723,15 +3040,17 @@ mod tests {
     fn publishing_queues_metadata_and_readers_request_localized_markdown_and_metadata() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path()).unwrap();
-        let created = database
-            .create_document(&NewDocument {
+        let created = create_document(
+            &database,
+            &NewDocument {
                 author_id: "author-a",
                 title: "Original",
                 source_language: "zh-CN",
                 content: "# 原文\n\n- [x] 已完成",
                 message: "Created document",
-            })
-            .unwrap();
+                parent_id: None,
+            },
+        );
         let source = database
             .save_document(&DocumentSave {
                 id: &created.document.id,
@@ -2922,15 +3241,17 @@ mod tests {
     fn inferred_source_language_is_available_before_a_reader_requests_translation() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path()).unwrap();
-        let created = database
-            .create_document(&NewDocument {
+        let created = create_document(
+            &database,
+            &NewDocument {
                 author_id: "author-a",
                 title: "Untitled language",
                 source_language: "und",
                 content: "# こんにちは",
                 message: "Created document",
-            })
-            .unwrap();
+                parent_id: None,
+            },
+        );
         let published = database
             .publish_document(&created.document.id, &created.revision.id)
             .unwrap()
@@ -3009,15 +3330,17 @@ mod tests {
     fn publication_rejects_a_source_revision_that_changed_while_translating() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path()).unwrap();
-        let created = database
-            .create_document(&NewDocument {
+        let created = create_document(
+            &database,
+            &NewDocument {
                 author_id: "author-a",
                 title: "Original",
                 source_language: "en-US",
                 content: "# Original",
                 message: "Created document",
-            })
-            .unwrap();
+                parent_id: None,
+            },
+        );
         let source = database
             .save_document(&DocumentSave {
                 id: &created.document.id,
@@ -3391,5 +3714,233 @@ mod tests {
         let reopened = Database::open(directory.path()).unwrap();
         assert_eq!(reopened.list_documents("author-a").unwrap().len(), 2);
         assert_eq!(reopened.public_documents(None).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn documents_form_an_ordered_tree_and_reject_invalid_moves() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let a = create_article(&database, "A", None);
+        let b = create_article(&database, "B", None);
+        let c = create_article(&database, "C", Some(&a.document.id));
+        let d = create_article(&database, "D", Some(&a.document.id));
+        assert_eq!(ordered_titles(&database, "author-a", None), ["A", "B"]);
+        assert_eq!(
+            ordered_titles(&database, "author-a", Some(&a.document.id)),
+            ["C", "D"]
+        );
+        assert_eq!(
+            database
+                .get_document(&a.document.id)
+                .unwrap()
+                .unwrap()
+                .descendant_count,
+            2
+        );
+
+        let moved = database
+            .move_document(&DocumentMove {
+                id: &d.document.id,
+                parent_id: None,
+                after_id: None,
+            })
+            .unwrap();
+        let MoveDocumentOutcome::Moved(moved) = moved else {
+            panic!("moving a document to the first position must succeed");
+        };
+        assert_eq!(moved.document.parent_id, None);
+        assert_eq!(ordered_titles(&database, "author-a", None), ["D", "A", "B"]);
+
+        let moved = database
+            .move_document(&DocumentMove {
+                id: &b.document.id,
+                parent_id: Some(&c.document.id),
+                after_id: None,
+            })
+            .unwrap();
+        let MoveDocumentOutcome::Moved(moved) = moved else {
+            panic!("re-parenting must succeed");
+        };
+        assert_eq!(
+            moved.document.parent_id.as_deref(),
+            Some(c.document.id.as_str())
+        );
+        assert_eq!(
+            ordered_titles(&database, "author-a", Some(&c.document.id)),
+            ["B"]
+        );
+        assert_eq!(ordered_titles(&database, "author-a", None), ["D", "A"]);
+
+        assert!(matches!(
+            database
+                .move_document(&DocumentMove {
+                    id: &a.document.id,
+                    parent_id: Some(&c.document.id),
+                    after_id: None,
+                })
+                .unwrap(),
+            MoveDocumentOutcome::InvalidTarget
+        ));
+        assert!(matches!(
+            database
+                .move_document(&DocumentMove {
+                    id: &b.document.id,
+                    parent_id: None,
+                    after_id: Some(&c.document.id),
+                })
+                .unwrap(),
+            MoveDocumentOutcome::InvalidTarget
+        ));
+        assert!(matches!(
+            database
+                .move_document(&DocumentMove {
+                    id: &b.document.id,
+                    parent_id: Some(&c.document.id),
+                    after_id: Some(&b.document.id),
+                })
+                .unwrap(),
+            MoveDocumentOutcome::InvalidTarget
+        ));
+        assert!(matches!(
+            database
+                .move_document(&DocumentMove {
+                    id: "missing",
+                    parent_id: None,
+                    after_id: None,
+                })
+                .unwrap(),
+            MoveDocumentOutcome::Missing
+        ));
+
+        let other = create_document(
+            &database,
+            &NewDocument {
+                author_id: "author-b",
+                title: "Other",
+                source_language: "en-US",
+                content: "",
+                message: "Created document",
+                parent_id: None,
+            },
+        );
+        assert!(matches!(
+            database
+                .move_document(&DocumentMove {
+                    id: &a.document.id,
+                    parent_id: Some(&other.document.id),
+                    after_id: None,
+                })
+                .unwrap(),
+            MoveDocumentOutcome::InvalidTarget
+        ));
+
+        let profile = database.profile_document("author-a").unwrap();
+        assert!(matches!(
+            database
+                .move_document(&DocumentMove {
+                    id: &profile.document.id,
+                    parent_id: None,
+                    after_id: None,
+                })
+                .unwrap(),
+            MoveDocumentOutcome::InvalidTarget
+        ));
+        assert!(matches!(
+            database
+                .create_document(&NewDocument {
+                    author_id: "author-a",
+                    title: "Under profile",
+                    source_language: "en-US",
+                    content: "",
+                    message: "Created document",
+                    parent_id: Some(&profile.document.id),
+                })
+                .unwrap(),
+            CreateDocumentOutcome::InvalidParent
+        ));
+        assert!(matches!(
+            database
+                .create_document(&NewDocument {
+                    author_id: "author-a",
+                    title: "Under missing",
+                    source_language: "en-US",
+                    content: "",
+                    message: "Created document",
+                    parent_id: Some("missing"),
+                })
+                .unwrap(),
+            CreateDocumentOutcome::MissingParent
+        ));
+    }
+
+    #[test]
+    fn deleting_a_parent_document_deletes_its_subtree() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let a = create_article(&database, "A", None);
+        let b = create_article(&database, "B", Some(&a.document.id));
+        let c = create_article(&database, "C", Some(&b.document.id));
+        let x = create_article(&database, "X", None);
+        let y = create_article(&database, "Y", None);
+        assert!(database.delete_document(&a.document.id).unwrap());
+        assert!(database.get_document(&b.document.id).unwrap().is_none());
+        assert!(database.get_document(&c.document.id).unwrap().is_none());
+        assert_eq!(ordered_titles(&database, "author-a", None), ["X", "Y"]);
+        assert!(database.delete_document(&y.document.id).unwrap());
+        assert_eq!(ordered_titles(&database, "author-a", None), ["X"]);
+        assert!(database.get_document(&x.document.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn existing_databases_backfill_document_order_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let connection = Connection::open(directory.path().join("ctx.sqlite3")).unwrap();
+            let legacy_ddl = super::CURRENT_TABLES_SQL
+                .replace(
+                    "        parent_id TEXT REFERENCES documents(id) ON DELETE CASCADE,\n",
+                    "",
+                )
+                .replace("        sort_key TEXT NOT NULL DEFAULT '',\n", "");
+            connection.execute_batch(&legacy_ddl).unwrap();
+            for (id, title, updated_at) in [
+                ("doc-1", "Older", 1_i64),
+                ("doc-2", "Middle", 2),
+                ("doc-3", "Newer", 3),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO documents(id, owner_id, title, status, visibility, document_kind, metadata_json, current_revision_id, created_at, updated_at) VALUES (?1, 'author-a', ?2, 'draft', 'private', 'article', '{}', ?3, ?4, ?4)",
+                        params![id, title, format!("{id}-rev"), updated_at],
+                    )
+                    .unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO document_revisions(id, document_id, content, message, author_id, created_at) VALUES (?1, ?2, '', '', 'author-a', ?3)",
+                        params![format!("{id}-rev"), id, updated_at],
+                    )
+                    .unwrap();
+            }
+        }
+        let database = Database::open(directory.path()).unwrap();
+        let documents = database.list_documents("author-a").unwrap();
+        assert_eq!(documents.len(), 3);
+        assert!(
+            documents
+                .iter()
+                .all(|document| !document.sort_key.is_empty())
+        );
+        let mut ordered = documents;
+        ordered.sort_by(|left, right| left.sort_key.cmp(&right.sort_key));
+        let titles: Vec<&str> = ordered
+            .iter()
+            .map(|document| document.title.as_str())
+            .collect();
+        assert_eq!(titles, ["Newer", "Middle", "Older"]);
+        create_article(&database, "Newest", None);
+        assert_eq!(
+            ordered_titles(&database, "author-a", None),
+            ["Newer", "Middle", "Older", "Newest"]
+        );
     }
 }

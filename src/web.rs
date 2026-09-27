@@ -24,9 +24,10 @@ use tower_http::trace::TraceLayer;
 use crate::{
     ai::{self, AiTask},
     db::{
-        AiConfiguration, AiRequest, AiRun, Database, DatabaseError, Document, DocumentComment,
-        DocumentDetail, DocumentSave, NewDocument, NewDocumentComment, PublicDocumentDetail,
-        PublicDocumentSummary, PublicUserProfile,
+        AiConfiguration, AiRequest, AiRun, CreateDocumentOutcome, Database, DatabaseError,
+        Document, DocumentComment, DocumentDetail, DocumentMove, DocumentSave, MoveDocumentOutcome,
+        NewDocument, NewDocumentComment, PublicDocumentDetail, PublicDocumentSummary,
+        PublicUserProfile,
     },
     language::normalize_language_tag,
     resources::{ResourceError, ResourceMonitor, SystemResourcesSnapshot},
@@ -66,6 +67,7 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
             "/documents/{document_id}",
             get(get_document).put(save_document).delete(delete_document),
         )
+        .route("/documents/{document_id}/move", post(move_document))
         .route(
             "/documents/{document_id}/publication",
             get(publication_time).put(update_publication_time),
@@ -158,14 +160,21 @@ async fn create_document(
 ) -> Result<(StatusCode, Json<DocumentDetail>), ApiError> {
     validate_document_input(&input)?;
     let source_language = source_language_or_und(input.source_language.as_deref())?;
-    let document = state.database.create_document(&NewDocument {
+    let outcome = state.database.create_document(&NewDocument {
         author_id: &principal.subject,
         title: input.title.trim(),
         source_language: &source_language,
         content: input.content.as_deref().unwrap_or_default(),
         message: "Created document",
+        parent_id: input.parent_id.as_deref(),
     })?;
-    Ok((StatusCode::CREATED, Json(document)))
+    match outcome {
+        CreateDocumentOutcome::Created(document) => Ok((StatusCode::CREATED, Json(*document))),
+        CreateDocumentOutcome::MissingParent => Err(ApiError::not_found()),
+        CreateDocumentOutcome::InvalidParent => Err(ApiError::bad_request(
+            "parent document must be an article you own",
+        )),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -239,6 +248,25 @@ async fn save_document(
         })?
         .ok_or_else(ApiError::not_found)?;
     Ok(Json(document))
+}
+
+async fn move_document(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Path(document_id): Path<String>,
+    Json(input): Json<DocumentMoveInput>,
+) -> Result<Json<DocumentDetail>, ApiError> {
+    require_document_owner(&state.database, &principal, &document_id)?;
+    let outcome = state.database.move_document(&DocumentMove {
+        id: &document_id,
+        parent_id: input.parent_id.as_deref(),
+        after_id: input.after_id.as_deref(),
+    })?;
+    match outcome {
+        MoveDocumentOutcome::Moved(document) => Ok(Json(*document)),
+        MoveDocumentOutcome::Missing => Err(ApiError::not_found()),
+        MoveDocumentOutcome::InvalidTarget => Err(ApiError::bad_request("invalid move target")),
+    }
 }
 
 async fn delete_document(
@@ -603,6 +631,13 @@ struct DocumentInput {
     title: String,
     source_language: Option<String>,
     content: Option<String>,
+    parent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DocumentMoveInput {
+    parent_id: Option<String>,
+    after_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
