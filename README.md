@@ -13,6 +13,11 @@ public square for anyone to read.
   Saving creates a new revision; publishing fixes the current revision as
   public. Authors can set an imported document's publication time before or
   after publishing without changing its Markdown revision.
+- Documents form a manual tree: any article can own sub-documents, a title can
+  be dragged to re-order or re-parent it together with its subtree, and
+  branches collapse and expand. Deleting a document deletes its sub-documents;
+  the editor warns with the affected count first. The square and the public
+  reader keep their flat, recency-based order.
 - Existing documents save after five seconds of editing inactivity, whenever
   the editor loses focus, and at least every 15 seconds while changes remain.
   Every unsaved edit also has a browser-local recovery copy, including a new

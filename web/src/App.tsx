@@ -15,6 +15,7 @@ import {
   ArrowLeftIcon,
   BookOpenIcon,
   CalendarClockIcon,
+  CornerDownRightIcon,
   CpuIcon,
   DatabaseIcon,
   ExternalLinkIcon,
@@ -112,6 +113,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { DocumentTree } from "@/components/document-tree"
 import { MarkdownEditor } from "@/components/markdown-editor"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -564,6 +566,8 @@ function DocumentListPage({ token }: { token: string }) {
   if (documents.isPending) return <PageSkeleton />
   if (documents.error) return <PageError error={documents.error} />
   const items = documents.data ?? []
+  const profile = items.find((document) => document.kind === "profile")
+  const articles = items.filter((document) => document.kind === "article")
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 p-4 md:p-6">
@@ -617,24 +621,28 @@ function DocumentListPage({ token }: { token: string }) {
           </EmptyContent>
         </Empty>
       ) : (
-        <section aria-label={t("documentsTitle")} className="flex flex-col">
-          {items.map((document, index) => (
-            <div key={document.id}>
-              {index > 0 ? <Separator /> : null}
+        <section aria-label={t("documentsTitle")} className="flex flex-col gap-1">
+          {profile ? (
+            <>
               <DocumentRow
-                document={document}
-                updatedAt={formatDateTime(document.updated_at, locale)}
-                onOpen={() => navigate(`/documents/${document.id}`)}
-                onViewPublic={() =>
-                  navigate(
-                    document.kind === "profile"
-                      ? `/u/${document.owner_id}`
-                      : `/p/${document.id}`
-                  )
-                }
+                document={profile}
+                updatedAt={formatDateTime(profile.updated_at, locale)}
+                onOpen={() => navigate(`/documents/${profile.id}`)}
+                onViewPublic={() => navigate(`/u/${profile.owner_id}`)}
               />
-            </div>
-          ))}
+              {articles.length > 0 ? <Separator /> : null}
+            </>
+          ) : null}
+          {articles.length > 0 ? (
+            <>
+              {articles.length > 1 ? (
+                <p className="px-1 pt-2 text-xs text-muted-foreground">
+                  {t("documentsTreeHint")}
+                </p>
+              ) : null}
+              <DocumentTree documents={articles} token={token} />
+            </>
+          ) : null}
         </section>
       )}
     </main>
@@ -704,6 +712,13 @@ function NewDocumentPage({ token }: { token: string }) {
     recoveredDraft?.sourceLanguage ?? "und"
   )
   const [content, setContent] = useState(recoveredDraft?.content ?? "")
+  const [searchParams, setSearchParams] = useSearchParams()
+  const parentId = searchParams.get("parent")
+  const parentDocument = parentId
+    ? (documents.data ?? []).find(
+        (document) => document.id === parentId && document.kind === "article"
+      )
+    : undefined
   const updateDraft = (draft: DocumentDraft) => {
     saveNewDocumentDraft(draft)
     setTitle(draft.title)
@@ -721,6 +736,7 @@ function NewDocumentPage({ token }: { token: string }) {
           title: title.trim(),
           source_language: sourceLanguage.trim(),
           content,
+          parent_id: parentDocument?.id ?? null,
         }),
       }),
     onSuccess: (detail) => {
@@ -754,6 +770,21 @@ function NewDocumentPage({ token }: { token: string }) {
           </Button>
         }
       />
+      {parentDocument ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-sm">
+          <CornerDownRightIcon className="size-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate">
+            {t("parentDocumentHint").replace("{title}", parentDocument.title)}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setSearchParams({}, { replace: true })}
+          >
+            {t("createAtRoot")}
+          </Button>
+        </div>
+      ) : null}
       <EditorFields
         title={title}
         sourceLanguage={sourceLanguage}
@@ -1086,6 +1117,14 @@ function ExistingDocumentEditor({
               </Button>
               {deleteArmed ? (
                 <>
+                  {detail.descendant_count > 0 ? (
+                    <span className="text-xs text-destructive">
+                      {t("deleteDocumentSubtreeWarning").replace(
+                        "{count}",
+                        String(detail.descendant_count)
+                      )}
+                    </span>
+                  ) : null}
                   <Button
                     variant="ghost"
                     disabled={remove.isPending}
