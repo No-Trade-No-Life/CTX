@@ -17,6 +17,8 @@ export type Document = {
   published_source_language: string | null
   created_at: number
   updated_at: number
+  parent_id: string | null
+  sort_key: string
 }
 
 export type DocumentRevision = {
@@ -31,6 +33,7 @@ export type DocumentRevision = {
 export type DocumentDetail = {
   document: Document
   revision: DocumentRevision
+  descendant_count: number
 }
 
 export type MediaUpload = {

@@ -40,6 +40,12 @@ const englishCopy = defineCopy({
   documentsTitle: "Your documents",
   documentsDescription:
     "Write in Markdown, keep every revision, and choose what to share.",
+  documentsTreeHint:
+    "Drag a document title to re-order it, or drop it onto another document to nest it.",
+  newSubDocument: "New sub-document",
+  parentDocumentHint: "Will be created inside “{title}”",
+  createAtRoot: "Create at the root instead",
+  toggleSubDocuments: "Expand or collapse sub-documents",
   newDocument: "New document",
   emptyDocumentsTitle: "Write the first one",
   emptyDocumentsDescription:
@@ -96,6 +102,7 @@ const englishCopy = defineCopy({
   editDocument: "Edit article",
   deleteDocument: "Delete document",
   deleteDocumentConfirm: "Delete permanently",
+  deleteDocumentSubtreeWarning: "This also deletes its {count} sub-documents.",
   documentDeleted: "Document deleted",
   documentNotFound: "Document not found",
   documentAi: "AI for this document",
@@ -343,6 +350,12 @@ const chineseCopy: Copy = {
   pageTitlePersonalPage: "个人主页",
   documentsTitle: "你的文档",
   documentsDescription: "用 Markdown 写作，保留每次修订，并选择哪些内容公开。",
+  documentsTreeHint:
+    "拖拽文档标题可调整顺序或层级：放到两行之间改变位置，放到某篇文档上成为其子文档。",
+  newSubDocument: "新建子文档",
+  parentDocumentHint: "将创建为《{title}》的子文档",
+  createAtRoot: "改为创建到根目录",
+  toggleSubDocuments: "展开或折叠子文档",
   newDocument: "新建文档",
   emptyDocumentsTitle: "写下第一篇",
   emptyDocumentsDescription:
@@ -397,6 +410,7 @@ const chineseCopy: Copy = {
   editDocument: "编辑本文",
   deleteDocument: "删除文档",
   deleteDocumentConfirm: "永久删除",
+  deleteDocumentSubtreeWarning: "将同时删除其 {count} 篇子文档。",
   documentDeleted: "文档已删除",
   documentNotFound: "未找到文档",
   documentAi: "文档 AI",
@@ -623,6 +637,12 @@ const japaneseCopy: Copy = {
   documentsTitle: "あなたの文書",
   documentsDescription:
     "Markdown で書き、すべてのリビジョンを残し、共有する内容を選べます。",
+  documentsTreeHint:
+    "文書のタイトルをドラッグして並べ替えたり、他の文書の下に入れ子にできます。",
+  newSubDocument: "サブ文書を作成",
+  parentDocumentHint: "「{title}」の下に作成されます",
+  createAtRoot: "ルート直下に作成",
+  toggleSubDocuments: "サブ文書の展開・折りたたみ",
   newDocument: "新しい文書",
   emptyDocumentsTitle: "最初の一篇を書く",
   emptyDocumentsDescription:
@@ -678,6 +698,7 @@ const japaneseCopy: Copy = {
   editDocument: "記事を編集",
   deleteDocument: "文書を削除",
   deleteDocumentConfirm: "完全に削除",
+  deleteDocumentSubtreeWarning: "この操作で {count} 件のサブ文書も削除されます。",
   documentDeleted: "文書を削除しました",
   documentNotFound: "文書が見つかりません",
   documentAi: "この文書の AI",
@@ -913,6 +934,12 @@ const spanishCopy: Copy = {
   documentsTitle: "Tus documentos",
   documentsDescription:
     "Escribe en Markdown, conserva cada revisión y decide qué compartir.",
+  documentsTreeHint:
+    "Arrastra el título de un documento para reordenarlo o anidarlo en otro.",
+  newSubDocument: "Nuevo subdocumento",
+  parentDocumentHint: "Se creará dentro de «{title}»",
+  createAtRoot: "Crear en la raíz",
+  toggleSubDocuments: "Expandir o contraer subdocumentos",
   newDocument: "Nuevo documento",
   emptyDocumentsTitle: "Escribe el primero",
   emptyDocumentsDescription:
@@ -970,6 +997,7 @@ const spanishCopy: Copy = {
   editDocument: "Editar artículo",
   deleteDocument: "Eliminar documento",
   deleteDocumentConfirm: "Eliminar definitivamente",
+  deleteDocumentSubtreeWarning: "También se eliminarán sus {count} subdocumentos.",
   documentDeleted: "Documento eliminado",
   documentNotFound: "Documento no encontrado",
   documentAi: "IA para este documento",
