@@ -687,12 +687,21 @@ async fn static_asset(uri: Uri) -> Response {
     if path.starts_with("api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let asset = WebAssets::get(path).or_else(|| WebAssets::get("index.html"));
-    let Some(asset) = asset else {
+    let asset = WebAssets::get(path);
+    if asset.is_none() && FilePath::new(path).extension().is_some() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let served_shell = asset.is_none();
+    let Some(asset) = asset.or_else(|| WebAssets::get("index.html")) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let content_type = mime_guess::from_path(if path.is_empty() { "index.html" } else { path })
         .first_or_octet_stream();
+    let cache_control = if !served_shell && path.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header(
@@ -700,6 +709,7 @@ async fn static_asset(uri: Uri) -> Response {
             HeaderValue::from_str(content_type.as_ref())
                 .unwrap_or(HeaderValue::from_static("application/octet-stream")),
         )
+        .header(header::CACHE_CONTROL, cache_control)
         .body(Body::from(asset.data.into_owned()))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
@@ -980,15 +990,42 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, image_content_type, is_media_id, public_media, publication_visibility,
-        requested_language, source_language_or_und, store_media, validate_ai_base_url,
+        AppState, WebAssets, image_content_type, is_media_id, public_media, publication_visibility,
+        requested_language, source_language_or_und, static_asset, store_media,
+        validate_ai_base_url,
     };
     use crate::{db::Database, resources::ResourceMonitor};
     use axum::{
         extract::{Path, State},
-        http::{StatusCode, header},
+        http::{StatusCode, Uri, header},
     };
     use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn serves_the_app_shell_without_cache_and_hashed_assets_immutably() {
+        let shell = static_asset(Uri::from_static("/")).await;
+        assert_eq!(shell.status(), StatusCode::OK);
+        assert_eq!(shell.headers()[header::CACHE_CONTROL], "no-cache");
+
+        let missing_asset = static_asset(Uri::from_static("/assets/missing.js")).await;
+        assert_eq!(missing_asset.status(), StatusCode::NOT_FOUND);
+
+        let index_html = WebAssets::get("index.html").unwrap();
+        let index_html = std::str::from_utf8(&index_html.data).unwrap();
+        let asset_name = index_html
+            .split("/assets/")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let asset = static_asset(Uri::try_from(format!("/assets/{asset_name}")).unwrap()).await;
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_eq!(
+            asset.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+    }
 
     fn test_auth_verifier() -> auth_mini_axum::AuthMiniVerifier {
         auth_mini_axum::AuthMiniVerifier::from_issuer_background(

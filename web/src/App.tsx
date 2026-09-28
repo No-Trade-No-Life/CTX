@@ -1268,8 +1268,13 @@ function ExistingDocumentEditor({
           }
           variant="private"
         />
-        {isPublished && detail.document.visibility === "private" ? (
-          <PrivateAccessCard token={token} detail={detail} />
+        {isPublished ? (
+          <VisibilityCard
+            token={token}
+            detail={detail}
+            isSwitching={publish.isPending}
+            onSetVisibility={publishCurrentRevision}
+          />
         ) : null}
         <AiPanel
           token={token}
@@ -1581,16 +1586,21 @@ function PublicationTimeEditor({
   )
 }
 
-function PrivateAccessCard({
+function VisibilityCard({
   token,
   detail,
+  isSwitching,
+  onSetVisibility,
 }: {
   token: string
   detail: DocumentDetail
+  isSwitching: boolean
+  onSetVisibility: (visibility: DocumentVisibility) => void
 }) {
   const { locale, t } = useI18n()
   const queryClient = useQueryClient()
   const documentId = detail.document.id
+  const isPrivate = detail.document.visibility === "private"
   const queryKey = ["document-readers", token, documentId]
   const readers = useQuery({
     queryKey,
@@ -1599,9 +1609,9 @@ function PrivateAccessCard({
         `/api/v1/documents/${documentId}/readers`,
         token
       ),
+    enabled: isPrivate,
   })
-  const invalidate = () =>
-    void queryClient.invalidateQueries({ queryKey })
+  const invalidate = () => void queryClient.invalidateQueries({ queryKey })
   const grant = useMutation({
     mutationFn: (userId: string) =>
       request<void>(
@@ -1625,74 +1635,100 @@ function PrivateAccessCard({
   const link = `${window.location.origin}/#/p/${documentId}`
 
   return (
-    <section
-      aria-label={t("privateAccessTitle")}
-      className="mt-6 border-t pt-5"
-    >
+    <section aria-label={t("visibilityTitle")} className="mt-6 border-t pt-5">
       <h2 className="flex items-center gap-2 text-sm font-medium">
-        <LockIcon className="size-4" />
-        {t("privateAccessTitle")}
+        {isPrivate ? (
+          <LockIcon className="size-4" />
+        ) : (
+          <Globe2Icon className="size-4" />
+        )}
+        {t("visibilityTitle")}
       </h2>
       <p className="mt-1 text-sm leading-6 text-muted-foreground">
-        {t("privateAccessDescription")}
+        {isPrivate ? t("privateAccessDescription") : t("visibilityPublic")}
       </p>
-      {readers.isPending ? (
-        <LoaderCircleIcon className="mt-4 size-4 animate-spin text-muted-foreground" />
-      ) : readers.error ? (
-        <p className="mt-4 text-sm leading-6 text-destructive">
-          {readers.error.message}
-        </p>
-      ) : (readers.data ?? []).length === 0 ? (
-        <p className="mt-4 text-sm leading-6 text-muted-foreground">
-          {t("privateAccessEmpty")}
-        </p>
-      ) : (
-        <div className="mt-2 divide-y">
-          {(readers.data ?? []).map((reader) => (
-            <div
-              key={reader.user_id}
-              className="flex items-center justify-between gap-2 py-2"
-            >
-              <LinkitUserInfo userId={reader.user_id} compact />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={t("privateAccessRemove")}
-                disabled={revoke.isPending}
-                onClick={() => revoke.mutate(reader.user_id)}
-              >
-                <XIcon />
-              </Button>
+      {isPrivate ? (
+        <>
+          {readers.isPending ? (
+            <LoaderCircleIcon className="mt-4 size-4 animate-spin text-muted-foreground" />
+          ) : readers.error ? (
+            <p className="mt-4 text-sm leading-6 text-destructive">
+              {readers.error.message}
+            </p>
+          ) : (readers.data ?? []).length === 0 ? (
+            <p className="mt-4 text-sm leading-6 text-muted-foreground">
+              {t("privateAccessEmpty")}
+            </p>
+          ) : (
+            <div className="mt-2 divide-y">
+              {(readers.data ?? []).map((reader) => (
+                <div
+                  key={reader.user_id}
+                  className="flex items-center justify-between gap-2 py-2"
+                >
+                  <LinkitUserInfo userId={reader.user_id} compact />
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={t("privateAccessRemove")}
+                    disabled={revoke.isPending}
+                    onClick={() => revoke.mutate(reader.user_id)}
+                  >
+                    <XIcon />
+                  </Button>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+          <div className="mt-4">
+            <LinkitUserPicker
+              lang={locale}
+              label={t("privateAccessAddLabel")}
+              placeholder={t("privateAccessAddPlaceholder")}
+              value=""
+              disabled={grant.isPending}
+              onValueChange={(userId) => {
+                if (userId) grant.mutate(userId)
+              }}
+            />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void navigator.clipboard
+                  .writeText(link)
+                  .then(() => toast.success(t("privateAccessLinkCopied")))
+                  .catch(showError)
+              }}
+            >
+              <CopyIcon data-icon="inline-start" />
+              {t("privateAccessCopyLink")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isSwitching}
+              onClick={() => onSetVisibility("public")}
+            >
+              <Globe2Icon data-icon="inline-start" />
+              {t("switchToPublic")}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-3"
+          disabled={isSwitching}
+          onClick={() => onSetVisibility("private")}
+        >
+          <LockIcon data-icon="inline-start" />
+          {t("switchToPrivate")}
+        </Button>
       )}
-      <div className="mt-4">
-        <LinkitUserPicker
-          lang={locale}
-          label={t("privateAccessAddLabel")}
-          placeholder={t("privateAccessAddPlaceholder")}
-          value=""
-          disabled={grant.isPending}
-          onValueChange={(userId) => {
-            if (userId) grant.mutate(userId)
-          }}
-        />
-      </div>
-      <Button
-        variant="outline"
-        size="sm"
-        className="mt-3"
-        onClick={() => {
-          void navigator.clipboard
-            .writeText(link)
-            .then(() => toast.success(t("privateAccessLinkCopied")))
-            .catch(showError)
-        }}
-      >
-        <CopyIcon data-icon="inline-start" />
-        {t("privateAccessCopyLink")}
-      </Button>
     </section>
   )
 }
