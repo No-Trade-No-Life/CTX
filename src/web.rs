@@ -4,14 +4,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use auth_mini_axum::{AuthMiniLayer, AuthMiniPrincipal};
+use auth_mini_axum::{AuthMiniLayer, AuthMiniPrincipal, AuthMiniVerifier};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, Extension, Path, Query, State},
-    http::{HeaderValue, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use reqwest::Url;
 use rust_embed::RustEmbed;
@@ -25,9 +25,9 @@ use crate::{
     ai::{self, AiTask},
     db::{
         AiConfiguration, AiRequest, AiRun, CreateDocumentOutcome, Database, DatabaseError,
-        Document, DocumentComment, DocumentDetail, DocumentMove, DocumentSave, MoveDocumentOutcome,
-        NewDocument, NewDocumentComment, PublicDocumentDetail, PublicDocumentSummary,
-        PublicUserProfile,
+        Document, DocumentComment, DocumentDetail, DocumentMove, DocumentReader, DocumentSave,
+        MoveDocumentOutcome, NewDocument, NewDocumentComment, PublicDocumentDetail,
+        PublicDocumentSummary, PublicUserProfile, ReadDocumentOutcome,
     },
     language::normalize_language_tag,
     resources::{ResourceError, ResourceMonitor, SystemResourcesSnapshot},
@@ -38,6 +38,7 @@ struct AppState {
     database: Database,
     media_directory: Arc<PathBuf>,
     resources: Arc<Mutex<ResourceMonitor>>,
+    auth_verifier: AuthMiniVerifier,
 }
 
 const MAX_IMAGE_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
@@ -53,6 +54,7 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
         database,
         media_directory,
+        auth_verifier: auth.verifier(),
     };
     let private = Router::new()
         .route("/me", get(me))
@@ -73,6 +75,14 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
             get(publication_time).put(update_publication_time),
         )
         .route("/documents/{document_id}/publish", post(publish_document))
+        .route(
+            "/documents/{document_id}/readers",
+            get(list_document_readers),
+        )
+        .route(
+            "/documents/{document_id}/readers/{user_id}",
+            put(grant_document_reader).delete(revoke_document_reader),
+        )
         .route(
             "/documents/{document_id}/profile-summaries",
             post(trigger_profile_summaries),
@@ -309,18 +319,62 @@ async fn update_publication_time(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+struct PublishDocumentInput {
+    visibility: String,
+}
+
 async fn publish_document(
     State(state): State<AppState>,
     Extension(principal): Extension<AuthMiniPrincipal>,
     Path(document_id): Path<String>,
+    Json(input): Json<PublishDocumentInput>,
 ) -> Result<Json<Document>, ApiError> {
+    let visibility = publication_visibility(&input.visibility)?;
     let document = require_document_owner(&state.database, &principal, &document_id)?;
     Ok(Json(
         state
             .database
-            .publish_document(&document_id, &document.revision.id)?
+            .publish_document(&document_id, &document.revision.id, visibility)?
             .ok_or_else(ApiError::conflict)?,
     ))
+}
+
+async fn list_document_readers(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Path(document_id): Path<String>,
+) -> Result<Json<Vec<DocumentReader>>, ApiError> {
+    require_document_owner(&state.database, &principal, &document_id)?;
+    Ok(Json(state.database.document_readers(&document_id)?))
+}
+
+async fn grant_document_reader(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Path((document_id, user_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_document_owner(&state.database, &principal, &document_id)?;
+    let user_id = user_id.trim();
+    if user_id.is_empty() {
+        return Err(ApiError::bad_request("reader user_id is required"));
+    }
+    state
+        .database
+        .grant_document_reader(&document_id, user_id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn revoke_document_reader(
+    State(state): State<AppState>,
+    Extension(principal): Extension<AuthMiniPrincipal>,
+    Path((document_id, user_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    require_document_owner(&state.database, &principal, &document_id)?;
+    state
+        .database
+        .revoke_document_reader(&document_id, user_id.trim())?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn trigger_profile_summaries(
@@ -476,12 +530,21 @@ async fn public_document(
     State(state): State<AppState>,
     Path(document_id): Path<String>,
     Query(query): Query<PublicDocumentQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<PublicDocumentDetail>, ApiError> {
     let language = requested_language(query.language.as_deref())?;
-    let mut document = state
-        .database
-        .public_document(&document_id, language.as_deref())?
-        .ok_or_else(ApiError::not_found)?;
+    let viewer = optional_viewer(&state, &headers).await;
+    let mut document =
+        match state
+            .database
+            .read_document(&document_id, language.as_deref(), viewer.as_deref())?
+        {
+            ReadDocumentOutcome::Found(document) => *document,
+            ReadDocumentOutcome::Private => {
+                return Err(ApiError::forbidden("document is private"));
+            }
+            ReadDocumentOutcome::Missing => return Err(ApiError::not_found()),
+        };
     if document.is_translation_fallback && language.as_deref().is_some_and(is_reader_language) {
         document.translation_status = state
             .database
@@ -489,6 +552,21 @@ async fn public_document(
             .or(document.translation_status);
     }
     Ok(Json(document))
+}
+
+async fn optional_viewer(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let token = headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .filter(|token| !token.is_empty())?;
+    state
+        .auth_verifier
+        .verify(token)
+        .await
+        .ok()
+        .map(|principal| principal.subject)
 }
 
 async fn public_comments(
@@ -803,6 +881,15 @@ fn validate_document_update(input: &DocumentUpdateInput) -> Result<(), ApiError>
     Ok(())
 }
 
+fn publication_visibility(value: &str) -> Result<&str, ApiError> {
+    match value {
+        "public" | "private" => Ok(value),
+        _ => Err(ApiError::bad_request(
+            "visibility must be public or private",
+        )),
+    }
+}
+
 fn validate_publication_time(published_at: i64) -> Result<(), ApiError> {
     chrono::DateTime::<chrono::Utc>::from_timestamp(published_at, 0)
         .is_some()
@@ -893,8 +980,8 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, image_content_type, is_media_id, public_media, requested_language,
-        source_language_or_und, store_media, validate_ai_base_url,
+        AppState, image_content_type, is_media_id, public_media, publication_visibility,
+        requested_language, source_language_or_und, store_media, validate_ai_base_url,
     };
     use crate::{db::Database, resources::ResourceMonitor};
     use axum::{
@@ -902,6 +989,22 @@ mod tests {
         http::{StatusCode, header},
     };
     use std::sync::{Arc, Mutex};
+
+    fn test_auth_verifier() -> auth_mini_axum::AuthMiniVerifier {
+        auth_mini_axum::AuthMiniVerifier::from_issuer_background(
+            "https://auth.ntnl.io",
+            "ctx.ntnl.io".to_owned(),
+            auth_mini_axum::JwksCachePolicy::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn accepts_only_public_and_private_publication_visibility() {
+        assert_eq!(publication_visibility("public").unwrap(), "public");
+        assert_eq!(publication_visibility("private").unwrap(), "private");
+        assert!(publication_visibility("unlisted").is_err());
+    }
 
     #[test]
     fn normalizes_requested_reader_languages() {
@@ -967,6 +1070,7 @@ mod tests {
                 resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
                 database,
                 media_directory,
+                auth_verifier: test_auth_verifier(),
             }),
             Path(media_id),
         )

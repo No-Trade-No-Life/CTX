@@ -92,6 +92,12 @@ const CURRENT_TABLES_SQL: &str = "
         suffix TEXT,
         created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS document_readers (
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (document_id, user_id)
+    );
 ";
 
 const CURRENT_INDEXES_SQL: &str = "
@@ -106,6 +112,7 @@ const CURRENT_INDEXES_SQL: &str = "
     CREATE INDEX IF NOT EXISTS ai_requests_status_idx ON ai_requests(status, created_at, id);
     CREATE INDEX IF NOT EXISTS ai_requests_document_idx ON ai_requests(document_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS document_comments_document_idx ON document_comments(document_id, source_revision_id, language, created_at, id);
+    CREATE INDEX IF NOT EXISTS document_readers_user_idx ON document_readers(user_id, document_id);
 ";
 
 const DOCUMENT_DETAIL_SQL: &str = "SELECT d.id, d.owner_id, d.title, d.source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, d.parent_id, d.sort_key, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id AND r.document_id = d.id WHERE d.id = ?1";
@@ -147,7 +154,6 @@ pub struct Document {
     pub source_language: String,
     pub status: String,
     pub kind: String,
-    #[serde(skip_serializing)]
     pub visibility: String,
     pub metadata: Value,
     pub current_revision_id: String,
@@ -196,6 +202,7 @@ pub struct PublicDocumentDetail {
     pub content: String,
     pub source_language: String,
     pub language: String,
+    pub visibility: String,
     pub available_languages: Vec<String>,
     pub metadata: PublishedMetadata,
     pub is_metadata_fallback: bool,
@@ -372,6 +379,12 @@ pub const PROFILE_SUMMARY_TASKS: [&str; 7] = [
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DocumentReader {
+    pub user_id: String,
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DocumentComment {
     pub id: String,
     pub document_id: String,
@@ -422,6 +435,13 @@ pub enum MoveDocumentOutcome {
     InvalidTarget,
 }
 
+#[derive(Debug)]
+pub enum ReadDocumentOutcome {
+    Found(Box<PublicDocumentDetail>),
+    Private,
+    Missing,
+}
+
 #[derive(Clone, Debug)]
 pub struct DocumentSave<'a> {
     pub id: &'a str,
@@ -451,6 +471,7 @@ struct PublishedDocument {
     title: String,
     content: String,
     source_language: String,
+    visibility: String,
     source_revision_id: String,
     published_at: i64,
 }
@@ -861,6 +882,7 @@ impl Database {
         &self,
         id: &str,
         source_revision_id: &str,
+        visibility: &str,
     ) -> Result<Option<Document>, DatabaseError> {
         let Some(mut detail) = self.get_document(id)? else {
             return Ok(None);
@@ -870,8 +892,8 @@ impl Database {
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         let updated = transaction.execute(
-            "UPDATE documents SET status = 'published', visibility = 'public', published_revision_id = ?2, published_title = title, published_at = COALESCE(published_at, ?3), source_language = ?4, published_source_language = ?4, updated_at = ?3 WHERE id = ?1 AND current_revision_id = ?2",
-            params![id, source_revision_id, updated_at, source_language],
+            "UPDATE documents SET status = 'published', visibility = ?5, published_revision_id = ?2, published_title = title, published_at = COALESCE(published_at, ?3), source_language = ?4, published_source_language = ?4, updated_at = ?3 WHERE id = ?1 AND current_revision_id = ?2",
+            params![id, source_revision_id, updated_at, source_language, visibility],
         )?;
         if updated == 0 {
             return Ok(None);
@@ -905,7 +927,7 @@ impl Database {
         }
         transaction.commit()?;
         detail.document.status = "published".to_owned();
-        detail.document.visibility = "public".to_owned();
+        detail.document.visibility = visibility.to_owned();
         detail.document.source_language = source_language.clone();
         detail.document.published_revision_id = Some(source_revision_id.to_owned());
         detail.document.published_source_language = Some(source_language);
@@ -956,7 +978,7 @@ impl Database {
         let transaction = connection.transaction()?;
         let profiles = {
             let mut statement = transaction.prepare(
-                "SELECT id, published_revision_id, published_source_language FROM documents WHERE document_kind = 'profile' AND status = 'published' AND visibility = 'public' AND published_revision_id IS NOT NULL",
+                "SELECT id, published_revision_id, published_source_language FROM documents WHERE document_kind = 'profile' AND status = 'published' AND published_revision_id IS NOT NULL",
             )?;
             statement
                 .query_map([], |row| {
@@ -1012,7 +1034,7 @@ impl Database {
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         let changed = transaction.execute(
-            "UPDATE documents SET metadata_json = ?3, updated_at = ?4 WHERE id = ?1 AND published_revision_id = ?2 AND document_kind = 'profile' AND status = 'published' AND visibility = 'public'",
+            "UPDATE documents SET metadata_json = ?3, updated_at = ?4 WHERE id = ?1 AND published_revision_id = ?2 AND document_kind = 'profile' AND status = 'published'",
             params![document_id, source_revision_id, metadata_json, now()],
         )?;
         if changed == 0 {
@@ -1114,7 +1136,7 @@ impl Database {
         let connection = self.connection()?;
         let publications = {
             let mut statement = connection.prepare(
-                "SELECT d.id, d.owner_id, d.published_title, r.content, d.published_source_language, d.published_revision_id, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.document_kind = 'article' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL AND d.published_source_language IS NOT NULL ORDER BY d.published_at DESC, d.id DESC",
+                "SELECT d.id, d.owner_id, d.published_title, r.content, d.published_source_language, d.visibility, d.published_revision_id, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.document_kind = 'article' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL AND d.published_source_language IS NOT NULL ORDER BY d.published_at DESC, d.id DESC",
             )?;
             statement
                 .query_map([], published_document_from_row)?
@@ -1128,27 +1150,71 @@ impl Database {
             .collect()
     }
 
-    pub fn public_document(
+    pub fn read_document(
         &self,
         id: &str,
         requested_language: Option<&str>,
-    ) -> Result<Option<PublicDocumentDetail>, DatabaseError> {
+        viewer: Option<&str>,
+    ) -> Result<ReadDocumentOutcome, DatabaseError> {
         let connection = self.connection()?;
-        let Some(publication) = connection
+        let publication = connection
             .query_row(
-                "SELECT d.id, d.owner_id, d.published_title, r.content, d.published_source_language, d.published_revision_id, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.id = ?1 AND d.document_kind = 'article' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL AND d.published_source_language IS NOT NULL",
-                [id],
-                published_document_from_row,
+                "SELECT d.id, d.owner_id, d.published_title, r.content, d.published_source_language, d.visibility, d.published_revision_id, d.published_at, CASE WHEN d.visibility = 'public' OR d.owner_id = ?2 OR EXISTS (SELECT 1 FROM document_readers rd WHERE rd.document_id = d.id AND rd.user_id = ?2) THEN 1 ELSE 0 END FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.id = ?1 AND d.document_kind = 'article' AND d.status = 'published' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL AND d.published_source_language IS NOT NULL",
+                params![id, viewer],
+                |row| Ok((published_document_from_row(row)?, row.get::<_, bool>(8)?)),
             )
-            .optional()?
-        else {
-            return Ok(None);
+            .optional()?;
+        let Some((publication, can_read)) = publication else {
+            return Ok(ReadDocumentOutcome::Missing);
         };
-        Ok(Some(public_document_detail(
-            &connection,
-            &publication,
-            requested_language,
-        )?))
+        if !can_read {
+            return Ok(ReadDocumentOutcome::Private);
+        }
+        Ok(ReadDocumentOutcome::Found(Box::new(
+            public_document_detail(&connection, &publication, requested_language)?,
+        )))
+    }
+
+    pub fn document_readers(
+        &self,
+        document_id: &str,
+    ) -> Result<Vec<DocumentReader>, DatabaseError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT user_id, created_at FROM document_readers WHERE document_id = ?1 ORDER BY created_at, user_id",
+        )?;
+        Ok(statement
+            .query_map([document_id], |row| {
+                Ok(DocumentReader {
+                    user_id: row.get(0)?,
+                    created_at: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn grant_document_reader(
+        &self,
+        document_id: &str,
+        user_id: &str,
+    ) -> Result<bool, DatabaseError> {
+        let changed = self.connection()?.execute(
+            "INSERT INTO document_readers(document_id, user_id, created_at) VALUES (?1, ?2, ?3) ON CONFLICT(document_id, user_id) DO NOTHING",
+            params![document_id, user_id, now()],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn revoke_document_reader(
+        &self,
+        document_id: &str,
+        user_id: &str,
+    ) -> Result<bool, DatabaseError> {
+        let changed = self.connection()?.execute(
+            "DELETE FROM document_readers WHERE document_id = ?1 AND user_id = ?2",
+            params![document_id, user_id],
+        )?;
+        Ok(changed == 1)
     }
 
     pub fn public_comments(
@@ -1216,7 +1282,7 @@ impl Database {
         let connection = self.connection()?;
         let profile = connection
             .query_row(
-                "SELECT d.id, d.owner_id, d.published_title, r.content, d.published_source_language, d.published_revision_id, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.owner_id = ?1 AND d.document_kind = 'profile' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL AND d.published_source_language IS NOT NULL",
+                "SELECT d.id, d.owner_id, d.published_title, r.content, d.published_source_language, d.visibility, d.published_revision_id, d.published_at FROM documents d JOIN document_revisions r ON r.id = d.published_revision_id AND r.document_id = d.id WHERE d.owner_id = ?1 AND d.document_kind = 'profile' AND d.status = 'published' AND d.visibility = 'public' AND d.published_title IS NOT NULL AND d.published_at IS NOT NULL AND d.published_source_language IS NOT NULL",
                 [owner_id],
                 published_document_from_row,
             )
@@ -1257,7 +1323,7 @@ impl Database {
         let connection = self.connection()?;
         let publication: Option<(String, String)> = connection
             .query_row(
-                "SELECT published_revision_id, published_source_language FROM documents WHERE id = ?1 AND status = 'published' AND visibility = 'public' AND published_revision_id IS NOT NULL AND published_source_language IS NOT NULL",
+                "SELECT published_revision_id, published_source_language FROM documents WHERE id = ?1 AND status = 'published' AND published_revision_id IS NOT NULL AND published_source_language IS NOT NULL",
                 [document_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -1304,7 +1370,7 @@ impl Database {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT d.id, d.owner_id, d.published_title, d.published_source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, d.parent_id, d.sort_key, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = ?2 AND r.document_id = d.id WHERE d.id = ?1 AND d.status = 'published' AND d.visibility = 'public' AND d.published_revision_id = ?2 AND d.published_title IS NOT NULL AND d.published_source_language IS NOT NULL",
+                "SELECT d.id, d.owner_id, d.published_title, d.published_source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, d.parent_id, d.sort_key, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = ?2 AND r.document_id = d.id WHERE d.id = ?1 AND d.status = 'published' AND d.published_revision_id = ?2 AND d.published_title IS NOT NULL AND d.published_source_language IS NOT NULL",
                 params![document_id, source_revision_id],
                 document_detail_from_row,
             )
@@ -1341,7 +1407,7 @@ impl Database {
         metadata: &PublishedMetadata,
     ) -> Result<bool, DatabaseError> {
         let changed = self.connection()?.execute(
-            "INSERT INTO document_metadata(document_id, language, source_revision_id, metadata_json, published_at) SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM documents WHERE id = ?1 AND published_revision_id = ?3 AND status = 'published' AND visibility = 'public') ON CONFLICT(document_id, language) DO UPDATE SET source_revision_id = excluded.source_revision_id, metadata_json = excluded.metadata_json, published_at = excluded.published_at",
+            "INSERT INTO document_metadata(document_id, language, source_revision_id, metadata_json, published_at) SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM documents WHERE id = ?1 AND published_revision_id = ?3 AND status = 'published') ON CONFLICT(document_id, language) DO UPDATE SET source_revision_id = excluded.source_revision_id, metadata_json = excluded.metadata_json, published_at = excluded.published_at",
             params![document_id, language, source_revision_id, serde_json::to_string(metadata)?, now()],
         )?;
         Ok(changed == 1)
@@ -1419,11 +1485,11 @@ impl Database {
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         let changed = transaction.execute(
-            "INSERT INTO document_translations(document_id, language, source_revision_id, title, content, published_at) SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE EXISTS (SELECT 1 FROM documents WHERE id = ?1 AND published_revision_id = ?3 AND status = 'published' AND visibility = 'public') ON CONFLICT(document_id, language) DO UPDATE SET source_revision_id = excluded.source_revision_id, title = excluded.title, content = excluded.content, published_at = excluded.published_at",
+            "INSERT INTO document_translations(document_id, language, source_revision_id, title, content, published_at) SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE EXISTS (SELECT 1 FROM documents WHERE id = ?1 AND published_revision_id = ?3 AND status = 'published') ON CONFLICT(document_id, language) DO UPDATE SET source_revision_id = excluded.source_revision_id, title = excluded.title, content = excluded.content, published_at = excluded.published_at",
             params![document_id, language, source_revision_id, title, content, now()],
         )?;
         transaction.execute(
-            "INSERT INTO document_metadata(document_id, language, source_revision_id, metadata_json, published_at) SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM documents WHERE id = ?1 AND published_revision_id = ?3 AND status = 'published' AND visibility = 'public') ON CONFLICT(document_id, language) DO UPDATE SET source_revision_id = excluded.source_revision_id, metadata_json = excluded.metadata_json, published_at = excluded.published_at",
+            "INSERT INTO document_metadata(document_id, language, source_revision_id, metadata_json, published_at) SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM documents WHERE id = ?1 AND published_revision_id = ?3 AND status = 'published') ON CONFLICT(document_id, language) DO UPDATE SET source_revision_id = excluded.source_revision_id, metadata_json = excluded.metadata_json, published_at = excluded.published_at",
             params![document_id, language, source_revision_id, serde_json::to_string(metadata)?, now()],
         )?;
         transaction.commit()?;
@@ -1513,7 +1579,7 @@ fn force_enqueue_author_profile_metadata(
 ) -> Result<(), DatabaseError> {
     let profiles = {
         let mut statement = transaction.prepare(
-            "SELECT id, published_revision_id FROM documents WHERE owner_id = ?1 AND document_kind = 'profile' AND status = 'published' AND visibility = 'public' AND published_revision_id IS NOT NULL",
+            "SELECT id, published_revision_id FROM documents WHERE owner_id = ?1 AND document_kind = 'profile' AND status = 'published' AND published_revision_id IS NOT NULL",
         )?;
         statement
             .query_map([owner_id], |row| {
@@ -1735,6 +1801,7 @@ fn public_document_detail(
         content,
         source_language: publication.source_language.clone(),
         language,
+        visibility: publication.visibility.clone(),
         available_languages,
         metadata,
         is_metadata_fallback,
@@ -1823,7 +1890,7 @@ fn backfill_published_metadata_requests(connection: &mut Connection) -> Result<(
     let transaction = connection.transaction()?;
     let publications = {
         let mut statement = transaction.prepare(
-            "SELECT d.id, d.published_revision_id FROM documents d WHERE d.status = 'published' AND d.visibility = 'public' AND d.published_revision_id IS NOT NULL AND d.published_source_language IS NOT NULL AND NOT EXISTS (SELECT 1 FROM document_metadata m WHERE m.document_id = d.id AND m.source_revision_id = d.published_revision_id AND m.language = d.published_source_language)",
+            "SELECT d.id, d.published_revision_id FROM documents d WHERE d.status = 'published' AND d.published_revision_id IS NOT NULL AND d.published_source_language IS NOT NULL AND NOT EXISTS (SELECT 1 FROM document_metadata m WHERE m.document_id = d.id AND m.source_revision_id = d.published_revision_id AND m.language = d.published_source_language)",
         )?;
         statement
             .query_map([], |row| {
@@ -1860,7 +1927,7 @@ fn backfill_profile_summaries(connection: &mut Connection) -> Result<(), Databas
     let transaction = connection.transaction()?;
     let profiles = {
         let mut statement = transaction.prepare(
-            "SELECT id, published_revision_id FROM documents WHERE document_kind = 'profile' AND status = 'published' AND visibility = 'public' AND published_revision_id IS NOT NULL",
+            "SELECT id, published_revision_id FROM documents WHERE document_kind = 'profile' AND status = 'published' AND published_revision_id IS NOT NULL",
         )?;
         statement
             .query_map([], |row| {
@@ -2418,8 +2485,9 @@ fn published_document_from_row(row: &Row<'_>) -> rusqlite::Result<PublishedDocum
         title: row.get(2)?,
         content: row.get(3)?,
         source_language: row.get(4)?,
-        source_revision_id: row.get(5)?,
-        published_at: row.get(6)?,
+        visibility: row.get(5)?,
+        source_revision_id: row.get(6)?,
+        published_at: row.get(7)?,
     })
 }
 
@@ -2468,8 +2536,19 @@ mod tests {
     use super::{
         CreateDocumentOutcome, Database, Document, DocumentDetail, DocumentMove, DocumentSave,
         MoveDocumentOutcome, NewDocument, NewDocumentComment, PROFILE_SUMMARY_TASKS,
-        PublishedMetadata, table_has_column,
+        PublicDocumentDetail, PublishedMetadata, ReadDocumentOutcome, table_has_column,
     };
+
+    fn read_public_document(
+        database: &Database,
+        document_id: &str,
+        language: Option<&str>,
+    ) -> Option<PublicDocumentDetail> {
+        match database.read_document(document_id, language, None).unwrap() {
+            ReadDocumentOutcome::Found(document) => Some(*document),
+            ReadDocumentOutcome::Private | ReadDocumentOutcome::Missing => None,
+        }
+    }
 
     fn metadata(language: &str, description: &str) -> PublishedMetadata {
         PublishedMetadata {
@@ -2565,7 +2644,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let published = database
-            .publish_document(&created.document.id, &saved.revision.id)
+            .publish_document(&created.document.id, &saved.revision.id, "public")
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -2586,10 +2665,7 @@ mod tests {
             })
             .unwrap();
 
-        let public = database
-            .public_document(&created.document.id, None)
-            .unwrap()
-            .unwrap();
+        let public = read_public_document(&database, &created.document.id, None).unwrap();
         assert_eq!(public.title, "Published note");
         assert_eq!(public.content, "# Published note");
         assert_eq!(public.source_language, "zh-CN");
@@ -2629,14 +2705,12 @@ mod tests {
             Some(1_704_067_200)
         );
         let published = database
-            .publish_document(&article.document.id, &article.revision.id)
+            .publish_document(&article.document.id, &article.revision.id, "public")
             .unwrap()
             .unwrap();
         let source_revision_id = published.published_revision_id.unwrap();
         assert_eq!(
-            database
-                .public_document(&article.document.id, None)
-                .unwrap()
+            read_public_document(&database, &article.document.id, None)
                 .unwrap()
                 .published_at,
             1_704_067_200
@@ -2736,6 +2810,144 @@ mod tests {
     }
 
     #[test]
+    fn private_publications_are_readable_by_the_owner_and_granted_readers_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let article = create_article(&database, "Shared note", None);
+        let saved = database
+            .save_document(&DocumentSave {
+                id: &article.document.id,
+                author_id: "author-a",
+                title: "Shared note",
+                source_language: "en-US",
+                content: "# Shared\n\nOnly invited readers.",
+                message: "Revise",
+                metadata: &json!({}),
+            })
+            .unwrap()
+            .unwrap();
+
+        let published = database
+            .publish_document(&article.document.id, &saved.revision.id, "private")
+            .unwrap()
+            .unwrap();
+        assert_eq!(published.status, "published");
+        assert_eq!(published.visibility, "private");
+        assert!(database.public_documents(None).unwrap().is_empty());
+        assert!(matches!(
+            database
+                .read_document(&article.document.id, None, None)
+                .unwrap(),
+            ReadDocumentOutcome::Private
+        ));
+        assert!(matches!(
+            database
+                .read_document(&article.document.id, None, Some("stranger"))
+                .unwrap(),
+            ReadDocumentOutcome::Private
+        ));
+
+        assert!(
+            database
+                .grant_document_reader(&article.document.id, "reader-a")
+                .unwrap()
+        );
+        for viewer in ["author-a", "reader-a"] {
+            let ReadDocumentOutcome::Found(document) = database
+                .read_document(&article.document.id, None, Some(viewer))
+                .unwrap()
+            else {
+                panic!("expected {viewer} to read the private publication");
+            };
+            assert_eq!(document.title, "Shared note");
+            assert_eq!(document.content, "# Shared\n\nOnly invited readers.");
+            assert_eq!(document.visibility, "private");
+        }
+
+        assert!(
+            database
+                .revoke_document_reader(&article.document.id, "reader-a")
+                .unwrap()
+        );
+        assert!(matches!(
+            database
+                .read_document(&article.document.id, None, Some("reader-a"))
+                .unwrap(),
+            ReadDocumentOutcome::Private
+        ));
+
+        database
+            .publish_document(&article.document.id, &saved.revision.id, "public")
+            .unwrap()
+            .unwrap();
+        assert_eq!(database.public_documents(None).unwrap().len(), 1);
+        let ReadDocumentOutcome::Found(document) = database
+            .read_document(&article.document.id, None, None)
+            .unwrap()
+        else {
+            panic!("expected the public republication to be readable");
+        };
+        assert_eq!(document.visibility, "public");
+    }
+
+    #[test]
+    fn granted_readers_are_listed_and_removed_with_their_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let article = create_article(&database, "Team note", None);
+
+        assert!(
+            database
+                .grant_document_reader(&article.document.id, "reader-b")
+                .unwrap()
+        );
+        assert!(
+            database
+                .grant_document_reader(&article.document.id, "reader-a")
+                .unwrap()
+        );
+        assert!(
+            !database
+                .grant_document_reader(&article.document.id, "reader-a")
+                .unwrap()
+        );
+        let mut user_ids: Vec<String> = database
+            .document_readers(&article.document.id)
+            .unwrap()
+            .into_iter()
+            .map(|reader| reader.user_id)
+            .collect();
+        user_ids.sort();
+        assert_eq!(user_ids, vec!["reader-a", "reader-b"]);
+
+        assert!(
+            database
+                .revoke_document_reader(&article.document.id, "reader-a")
+                .unwrap()
+        );
+        assert!(
+            !database
+                .revoke_document_reader(&article.document.id, "reader-a")
+                .unwrap()
+        );
+        assert_eq!(
+            database
+                .document_readers(&article.document.id)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert!(database.delete_document(&article.document.id).unwrap());
+        assert!(
+            database
+                .document_readers(&article.document.id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn profile_documents_are_unique_and_do_not_appear_in_the_square() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path()).unwrap();
@@ -2757,7 +2969,7 @@ mod tests {
             .unwrap()
             .unwrap();
         database
-            .publish_document(&profile.document.id, &profile_source.revision.id)
+            .publish_document(&profile.document.id, &profile_source.revision.id, "public")
             .unwrap()
             .unwrap();
         let profile_request_id = database
@@ -2785,7 +2997,7 @@ mod tests {
             },
         );
         database
-            .publish_document(&article.document.id, &article.revision.id)
+            .publish_document(&article.document.id, &article.revision.id, "public")
             .unwrap()
             .unwrap();
         let published_articles = database.published_articles_for_author("author-a").unwrap();
@@ -2853,12 +3065,7 @@ mod tests {
         );
 
         assert_eq!(database.public_documents(None).unwrap().len(), 1);
-        assert!(
-            database
-                .public_document(&profile.document.id, None)
-                .unwrap()
-                .is_none()
-        );
+        assert!(read_public_document(&database, &profile.document.id, None).is_none());
         let public_profile = database.public_user_profile("author-a", None).unwrap();
         assert_eq!(public_profile.published_article_dates.len(), 1);
         assert_eq!(
@@ -2897,7 +3104,7 @@ mod tests {
             .unwrap()
             .unwrap();
         database
-            .publish_document(&profile.document.id, &source.revision.id)
+            .publish_document(&profile.document.id, &source.revision.id, "public")
             .unwrap()
             .unwrap();
         let requests = database.ai_requests().unwrap();
@@ -2980,7 +3187,7 @@ mod tests {
             .unwrap()
             .unwrap();
         reopened
-            .publish_document(&profile.document.id, &source.revision.id)
+            .publish_document(&profile.document.id, &source.revision.id, "public")
             .unwrap()
             .unwrap();
         assert!(
@@ -3064,7 +3271,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let published = database
-            .publish_document(&created.document.id, &source.revision.id)
+            .publish_document(&created.document.id, &source.revision.id, "public")
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -3082,19 +3289,14 @@ mod tests {
         assert_eq!(requests[0].target_language, "");
         assert_eq!(requests[0].status, "queued");
 
-        let source_public = database
-            .public_document(&created.document.id, None)
-            .unwrap()
-            .unwrap();
+        let source_public = read_public_document(&database, &created.document.id, None).unwrap();
         assert_eq!(source_public.owner_id, "author-a");
         assert_eq!(source_public.language, "zh-CN");
         assert_eq!(source_public.available_languages, vec!["zh-CN"]);
         assert!(source_public.metadata.is_empty());
         assert_eq!(source_public.metadata_status.as_deref(), Some("queued"));
-        let english_public = database
-            .public_document(&created.document.id, Some("en-US"))
-            .unwrap()
-            .unwrap();
+        let english_public =
+            read_public_document(&database, &created.document.id, Some("en-US")).unwrap();
         assert_eq!(english_public.language, "zh-CN");
         assert!(english_public.is_translation_fallback);
         assert_eq!(english_public.requested_language.as_deref(), Some("en-US"));
@@ -3139,10 +3341,8 @@ mod tests {
                 ],
             )
             .unwrap();
-        let incomplete_legacy_translation = database
-            .public_document(&created.document.id, Some("en-US"))
-            .unwrap()
-            .unwrap();
+        let incomplete_legacy_translation =
+            read_public_document(&database, &created.document.id, Some("en-US")).unwrap();
         assert_eq!(incomplete_legacy_translation.language, "zh-CN");
         assert_eq!(
             incomplete_legacy_translation.content,
@@ -3166,10 +3366,8 @@ mod tests {
                 )
                 .unwrap()
         );
-        let english_public = database
-            .public_document(&created.document.id, Some("en-US"))
-            .unwrap()
-            .unwrap();
+        let english_public =
+            read_public_document(&database, &created.document.id, Some("en-US")).unwrap();
         assert_eq!(english_public.language, "en-US");
         assert_eq!(english_public.content, "# Original\n\n- [x] Done");
         assert_eq!(english_public.metadata.description, "English description");
@@ -3195,22 +3393,18 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            database
-                .public_document(&created.document.id, None)
-                .unwrap()
+            read_public_document(&database, &created.document.id, None)
                 .unwrap()
                 .source_language,
             "zh-CN"
         );
 
         database
-            .publish_document(&created.document.id, &next.revision.id)
+            .publish_document(&created.document.id, &next.revision.id, "public")
             .unwrap()
             .unwrap();
         assert!(
-            database
-                .public_document(&created.document.id, Some("ja-JP"))
-                .unwrap()
+            read_public_document(&database, &created.document.id, Some("ja-JP"))
                 .unwrap()
                 .is_translation_fallback
         );
@@ -3228,9 +3422,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            database
-                .public_document(&created.document.id, Some("zh-CN"))
-                .unwrap()
+            read_public_document(&database, &created.document.id, Some("zh-CN"))
                 .unwrap()
                 .title,
             "更新的原文"
@@ -3253,7 +3445,7 @@ mod tests {
             },
         );
         let published = database
-            .publish_document(&created.document.id, &created.revision.id)
+            .publish_document(&created.document.id, &created.revision.id, "public")
             .unwrap()
             .unwrap();
         assert_eq!(published.published_source_language.as_deref(), Some("und"));
@@ -3317,9 +3509,7 @@ mod tests {
             })
         );
         assert_eq!(
-            database
-                .public_document(&created.document.id, None)
-                .unwrap()
+            read_public_document(&database, &created.document.id, None)
                 .unwrap()
                 .source_language,
             "ja-JP"
@@ -3366,16 +3556,11 @@ mod tests {
             .unwrap();
         assert!(
             database
-                .publish_document(&created.document.id, &source.revision.id)
+                .publish_document(&created.document.id, &source.revision.id, "public")
                 .unwrap()
                 .is_none()
         );
-        assert!(
-            database
-                .public_document(&created.document.id, None)
-                .unwrap()
-                .is_none()
-        );
+        assert!(read_public_document(&database, &created.document.id, None).is_none());
     }
 
     #[test]
@@ -3453,10 +3638,7 @@ mod tests {
         assert_eq!(published.published_source_language.as_deref(), Some("und"));
         assert_eq!(draft.source_language, "und");
         assert!(draft.published_source_language.is_none());
-        let public = database
-            .public_document("published", None)
-            .unwrap()
-            .unwrap();
+        let public = read_public_document(&database, "published", None).unwrap();
         assert_eq!(public.title, "Published title");
         assert_eq!(public.content, "# Published");
         assert_eq!(public.source_language, "und");
@@ -3610,16 +3792,9 @@ mod tests {
         assert!(public_documents.iter().any(|document| {
             document.title == "Published document" && document.published_at == 4
         }));
-        assert!(
-            database
-                .public_document("private-document", None)
-                .unwrap()
-                .is_none()
-        );
-        let changed_public_document = database
-            .public_document("changed-document", None)
-            .unwrap()
-            .unwrap();
+        assert!(read_public_document(&database, "private-document", None).is_none());
+        let changed_public_document =
+            read_public_document(&database, "changed-document", None).unwrap();
         assert_eq!(changed_public_document.title, "Published document");
         assert_eq!(changed_public_document.content, "# Original public title");
         assert_eq!(changed_public_document.published_at, 4);
