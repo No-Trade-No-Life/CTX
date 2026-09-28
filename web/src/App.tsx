@@ -9,12 +9,17 @@ import {
   type ReactNode,
 } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useAuthMini } from "auth-mini-react-components"
-import { LinkitMyInfo, LinkitUserInfo } from "linkit-react-components"
+import { AuthMiniButton, useAuthMini } from "auth-mini-react-components"
+import {
+  LinkitMyInfo,
+  LinkitUserInfo,
+  LinkitUserPicker,
+} from "linkit-react-components"
 import {
   ArrowLeftIcon,
   BookOpenIcon,
   CalendarClockIcon,
+  CopyIcon,
   CornerDownRightIcon,
   CpuIcon,
   DatabaseIcon,
@@ -24,6 +29,7 @@ import {
   HardDriveIcon,
   LanguagesIcon,
   LoaderCircleIcon,
+  LockIcon,
   MemoryStickIcon,
   MessageSquareIcon,
   NetworkIcon,
@@ -54,7 +60,9 @@ import {
 } from "react-router-dom"
 import { toast } from "sonner"
 
-import { request, upload } from "./lib/api"
+import { cn } from "cn"
+
+import { ApiRequestError, request, upload } from "./lib/api"
 import {
   clearDocumentDraft,
   clearNewDocumentDraft,
@@ -75,6 +83,8 @@ import type {
   Document,
   DocumentComment,
   DocumentDetail,
+  DocumentReader,
+  DocumentVisibility,
   MediaUpload,
   MbtiAnalysis,
   Me,
@@ -113,6 +123,14 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { DocumentTree } from "@/components/document-tree"
 import { MarkdownEditor } from "@/components/markdown-editor"
 import { Separator } from "@/components/ui/separator"
@@ -680,13 +698,26 @@ function DocumentRow({
       </Button>
       {isProfile ? <Badge variant="outline">{t("personalPage")}</Badge> : null}
       <Badge variant={isPublished ? "secondary" : "outline"}>
-        {isPublished ? t("published") : t("draft")}
+        {isPublished && document.visibility === "private" ? (
+          <>
+            <LockIcon data-icon="inline-start" />
+            {t("publishedPrivate")}
+          </>
+        ) : isPublished ? (
+          t("published")
+        ) : (
+          t("draft")
+        )}
       </Badge>
       {isPublished ? (
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label={t("viewPublicArticle")}
+          aria-label={
+            document.visibility === "private"
+              ? t("viewPrivateArticle")
+              : t("viewPublicArticle")
+          }
           onClick={onViewPublic}
         >
           <ExternalLinkIcon />
@@ -842,6 +873,9 @@ function ExistingDocumentEditor({
   const imageUpload = useImageUpload(token)
   const isPublished = detail.document.status === "published"
   const [deleteArmed, setDeleteArmed] = useState(false)
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const [publishVisibility, setPublishVisibility] =
+    useState<DocumentVisibility>("public")
   const savedServerDraft = documentDraftFrom(
     detail.document.title,
     detail.document.source_language,
@@ -931,7 +965,7 @@ function ExistingDocumentEditor({
     },
   })
   const publish = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (visibility: DocumentVisibility) => {
       const draft = draftRef.current
       const savedDetail = draftsMatch(draft, savedDraftRef.current)
         ? null
@@ -941,13 +975,18 @@ function ExistingDocumentEditor({
         token,
         {
           method: "POST",
+          body: JSON.stringify({ visibility }),
         }
       )
-      return { draft, savedDetail }
+      return { draft, savedDetail, visibility }
     },
-    onSuccess: ({ draft, savedDetail }) => {
+    onSuccess: ({ draft, savedDetail, visibility }) => {
       if (savedDetail) markSaved(savedDetail, draft)
-      toast.success(t("publishedCurrentRevision"))
+      toast.success(
+        visibility === "private"
+          ? t("publishedPrivately")
+          : t("publishedCurrentRevision")
+      )
       void queryClient.invalidateQueries({ queryKey: ["documents", token] })
       void queryClient.invalidateQueries({
         queryKey: ["document", token, detail.document.id],
@@ -1003,11 +1042,19 @@ function ExistingDocumentEditor({
     savePendingRef.current = true
     saveMutationRef.current({ draft, notify })
   }, [])
-  const publishCurrentRevision = useCallback(() => {
+  const publishCurrentRevision = useCallback((visibility: DocumentVisibility) => {
     if (savePendingRef.current || publishPendingRef.current) return
     publishPendingRef.current = true
-    publishMutationRef.current()
+    publishMutationRef.current(visibility)
   }, [])
+  const openPublishDialog = useCallback(() => {
+    setPublishVisibility(
+      detail.document.status === "published"
+        ? detail.document.visibility
+        : "public"
+    )
+    setPublishDialogOpen(true)
+  }, [detail.document.status, detail.document.visibility])
   const saveAfterBlur = useCallback(() => {
     window.setTimeout(() => saveIfNeeded(), 0)
   }, [saveIfNeeded])
@@ -1067,7 +1114,8 @@ function ExistingDocumentEditor({
         : t("autosaved")
 
   return (
-    <main className="mx-auto grid w-full max-w-7xl gap-8 p-4 md:p-6 xl:grid-cols-[minmax(0,1fr)_19rem]">
+    <>
+      <main className="mx-auto grid w-full max-w-7xl gap-8 p-4 md:p-6 xl:grid-cols-[minmax(0,1fr)_19rem]">
       <section className="min-w-0">
         <EditorTopbar
           title={title || t("document")}
@@ -1075,7 +1123,16 @@ function ExistingDocumentEditor({
           actions={
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Badge variant={isPublished ? "secondary" : "outline"}>
-                {isPublished ? t("published") : t("draft")}
+                {isPublished && detail.document.visibility === "private" ? (
+                  <>
+                    <LockIcon data-icon="inline-start" />
+                    {t("publishedPrivate")}
+                  </>
+                ) : isPublished ? (
+                  t("published")
+                ) : (
+                  t("draft")
+                )}
               </Badge>
               <span
                 role="status"
@@ -1103,7 +1160,7 @@ function ExistingDocumentEditor({
               </Button>
               <Button
                 disabled={isWriting || !title.trim()}
-                onClick={publishCurrentRevision}
+                onClick={openPublishDialog}
               >
                 {publish.isPending ? (
                   <LoaderCircleIcon
@@ -1173,7 +1230,11 @@ function ExistingDocumentEditor({
               onClick={() => navigate(`/p/${detail.document.id}`)}
             >
               <ExternalLinkIcon data-icon="inline-start" />
-              {t("viewPublicArticle")}
+              {t(
+                detail.document.visibility === "private"
+                  ? "viewPrivateArticle"
+                  : "viewPublicArticle"
+              )}
             </Button>
           ) : null}
         </div>
@@ -1207,6 +1268,9 @@ function ExistingDocumentEditor({
           }
           variant="private"
         />
+        {isPublished && detail.document.visibility === "private" ? (
+          <PrivateAccessCard token={token} detail={detail} />
+        ) : null}
         <AiPanel
           token={token}
           detail={detail}
@@ -1221,7 +1285,84 @@ function ExistingDocumentEditor({
           isPublishing={publish.isPending}
         />
       </aside>
-    </main>
+      </main>
+      <Dialog open={publishDialogOpen} onOpenChange={setPublishDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("publishDialogTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("publishVisibilityQuestion")}
+            </DialogDescription>
+          </DialogHeader>
+          <div
+            role="radiogroup"
+            aria-label={t("publishVisibilityQuestion")}
+            className="grid gap-2"
+          >
+            {(["public", "private"] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={publishVisibility === option}
+                className={cn(
+                  "rounded-lg border px-4 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                  publishVisibility === option
+                    ? "border-primary bg-primary/5"
+                    : "hover:bg-muted/50"
+                )}
+                onClick={() => setPublishVisibility(option)}
+              >
+                <span className="flex items-center gap-2 font-medium">
+                  {option === "public" ? (
+                    <Globe2Icon className="size-4" />
+                  ) : (
+                    <LockIcon className="size-4" />
+                  )}
+                  {t(
+                    option === "public"
+                      ? "publishPublicOption"
+                      : "publishPrivateOption"
+                  )}
+                </span>
+                <span className="mt-1 block text-sm leading-6 text-muted-foreground">
+                  {t(
+                    option === "public"
+                      ? "publishPublicDescription"
+                      : "publishPrivateDescription"
+                  )}
+                </span>
+              </button>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPublishDialogOpen(false)}
+            >
+              {t("cancel")}
+            </Button>
+            <Button
+              disabled={publish.isPending}
+              onClick={() => {
+                setPublishDialogOpen(false)
+                publishCurrentRevision(publishVisibility)
+              }}
+            >
+              {publish.isPending ? (
+                <LoaderCircleIcon
+                  className="animate-spin"
+                  data-icon="inline-start"
+                />
+              ) : (
+                <Globe2Icon data-icon="inline-start" />
+              )}
+              {t("publish")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 
@@ -1436,6 +1577,122 @@ function PublicationTimeEditor({
           </Button>
         </div>
       </Field>
+    </section>
+  )
+}
+
+function PrivateAccessCard({
+  token,
+  detail,
+}: {
+  token: string
+  detail: DocumentDetail
+}) {
+  const { locale, t } = useI18n()
+  const queryClient = useQueryClient()
+  const documentId = detail.document.id
+  const queryKey = ["document-readers", token, documentId]
+  const readers = useQuery({
+    queryKey,
+    queryFn: () =>
+      request<DocumentReader[]>(
+        `/api/v1/documents/${documentId}/readers`,
+        token
+      ),
+  })
+  const invalidate = () =>
+    void queryClient.invalidateQueries({ queryKey })
+  const grant = useMutation({
+    mutationFn: (userId: string) =>
+      request<void>(
+        `/api/v1/documents/${documentId}/readers/${encodeURIComponent(userId)}`,
+        token,
+        { method: "PUT" }
+      ),
+    onSuccess: invalidate,
+    onError: showError,
+  })
+  const revoke = useMutation({
+    mutationFn: (userId: string) =>
+      request<void>(
+        `/api/v1/documents/${documentId}/readers/${encodeURIComponent(userId)}`,
+        token,
+        { method: "DELETE" }
+      ),
+    onSuccess: invalidate,
+    onError: showError,
+  })
+  const link = `${window.location.origin}/#/p/${documentId}`
+
+  return (
+    <section
+      aria-label={t("privateAccessTitle")}
+      className="mt-6 border-t pt-5"
+    >
+      <h2 className="flex items-center gap-2 text-sm font-medium">
+        <LockIcon className="size-4" />
+        {t("privateAccessTitle")}
+      </h2>
+      <p className="mt-1 text-sm leading-6 text-muted-foreground">
+        {t("privateAccessDescription")}
+      </p>
+      {readers.isPending ? (
+        <LoaderCircleIcon className="mt-4 size-4 animate-spin text-muted-foreground" />
+      ) : readers.error ? (
+        <p className="mt-4 text-sm leading-6 text-destructive">
+          {readers.error.message}
+        </p>
+      ) : (readers.data ?? []).length === 0 ? (
+        <p className="mt-4 text-sm leading-6 text-muted-foreground">
+          {t("privateAccessEmpty")}
+        </p>
+      ) : (
+        <div className="mt-2 divide-y">
+          {(readers.data ?? []).map((reader) => (
+            <div
+              key={reader.user_id}
+              className="flex items-center justify-between gap-2 py-2"
+            >
+              <LinkitUserInfo userId={reader.user_id} compact />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t("privateAccessRemove")}
+                disabled={revoke.isPending}
+                onClick={() => revoke.mutate(reader.user_id)}
+              >
+                <XIcon />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-4">
+        <LinkitUserPicker
+          lang={locale}
+          label={t("privateAccessAddLabel")}
+          placeholder={t("privateAccessAddPlaceholder")}
+          value=""
+          disabled={grant.isPending}
+          onValueChange={(userId) => {
+            if (userId) grant.mutate(userId)
+          }}
+        />
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        className="mt-3"
+        onClick={() => {
+          void navigator.clipboard
+            .writeText(link)
+            .then(() => toast.success(t("privateAccessLinkCopied")))
+            .catch(showError)
+        }}
+      >
+        <CopyIcon data-icon="inline-start" />
+        {t("privateAccessCopyLink")}
+      </Button>
     </section>
   )
 }
@@ -1981,19 +2238,25 @@ function PublicDocumentPage() {
     anchor: CommentAnchor
   } | null>(null)
   const document = useQuery({
-    queryKey: ["public-document", documentId, locale],
+    queryKey: ["public-document", documentId, locale, session?.accessToken],
     queryFn: () =>
       request<PublicDocumentDetail>(
-        `/api/public/documents/${documentId}?language=${encodeURIComponent(locale)}`
+        `/api/public/documents/${documentId}?language=${encodeURIComponent(locale)}`,
+        session?.accessToken ?? undefined
       ),
-    enabled: Boolean(documentId),
+    enabled: isReady && Boolean(documentId),
     refetchInterval: (query) =>
       query.state.data?.is_translation_fallback ||
       query.state.data?.metadata_status
         ? 2_000
         : false,
   })
-  useBrowserTitle(document.data?.title ?? t("pageTitleEditor"))
+  const isPrivateDocument =
+    document.error instanceof ApiRequestError && document.error.status === 403
+  useBrowserTitle(
+    document.data?.title ??
+      (isPrivateDocument ? t("privateDocumentTitle") : t("pageTitleEditor"))
+  )
   const me = useQuery({
     queryKey: ["me", session?.accessToken],
     queryFn: () => request<Me>("/api/v1/me", session?.accessToken ?? undefined),
@@ -2003,6 +2266,33 @@ function PublicDocumentPage() {
     commentAnchor?.documentId === documentId ? commentAnchor.anchor : null
 
   if (document.isPending) return <LoadingPage />
+  if (isPrivateDocument)
+    return (
+      <main className="mx-auto w-full max-w-3xl p-6 md:py-14">
+        <Empty className="min-h-80">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <LockIcon />
+            </EmptyMedia>
+            <EmptyTitle>{t("privateDocumentTitle")}</EmptyTitle>
+            <EmptyDescription>
+              {isAuthenticated
+                ? t("privateDocumentNoAccess")
+                : t("privateDocumentSignIn")}
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            {isAuthenticated ? null : (
+              <AuthMiniButton lang={locale} variant="outline" />
+            )}
+            <Button variant="outline" onClick={() => navigate("/square")}>
+              <ArrowLeftIcon data-icon="inline-start" />
+              {t("backToSquare")}
+            </Button>
+          </EmptyContent>
+        </Empty>
+      </main>
+    )
   if (document.error || !document.data)
     return (
       <PageError
@@ -2043,6 +2333,12 @@ function PublicDocumentPage() {
             {t("viewAuthorPage")}
           </Button>
           <Badge variant="outline">{document.data.language}</Badge>
+          {document.data.visibility === "private" ? (
+            <Badge variant="outline">
+              <LockIcon data-icon="inline-start" />
+              {t("privateDocumentBadge")}
+            </Badge>
+          ) : null}
           {me.data?.user_id === document.data.owner_id ? (
             <Button
               variant="outline"
@@ -2097,15 +2393,17 @@ function PublicDocumentPage() {
           {document.data.content}
         </ReactMarkdown>
       </article>
-      <DocumentComments
-        documentId={document.data.id}
-        language={document.data.language}
-        token={session?.accessToken ?? undefined}
-        canComment={isReady && isAuthenticated && Boolean(session?.accessToken)}
-        articleRef={articleRef}
-        anchor={activeCommentAnchor}
-        onClearAnchor={() => setCommentAnchor(null)}
-      />
+      {document.data.visibility === "private" ? null : (
+        <DocumentComments
+          documentId={document.data.id}
+          language={document.data.language}
+          token={session?.accessToken ?? undefined}
+          canComment={isReady && isAuthenticated && Boolean(session?.accessToken)}
+          articleRef={articleRef}
+          anchor={activeCommentAnchor}
+          onClearAnchor={() => setCommentAnchor(null)}
+        />
+      )}
     </main>
   )
 }

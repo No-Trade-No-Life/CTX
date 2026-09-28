@@ -4,12 +4,15 @@ export type Me = {
   setup_required: boolean
 }
 
+export type DocumentVisibility = "private" | "public"
+
 export type Document = {
   id: string
   owner_id: string
   title: string
   source_language: string
   status: "draft" | "published"
+  visibility: DocumentVisibility
   kind: "article" | "profile"
   metadata: Record<string, unknown>
   current_revision_id: string
@@ -39,6 +42,11 @@ export type DocumentDetail = {
 export type MediaUpload = {
   id: string
   url: string
+}
+
+export type DocumentReader = {
+  user_id: string
+  created_at: number
 }
 
 export type PublicDocument = {
@@ -109,6 +117,7 @@ export type PublicDocumentDetail = {
   content: string
   source_language: string
   language: string
+  visibility: DocumentVisibility
   available_languages: string[]
   metadata: PublishedMetadata
   is_metadata_fallback: boolean

@@ -11,8 +11,11 @@ public square for anyone to read.
   Markdown revisions.
 - Direct document creation, editing, and deletion for each authenticated user.
   Saving creates a new revision; publishing fixes the current revision as
-  public. Authors can set an imported document's publication time before or
-  after publishing without changing its Markdown revision.
+  public or private. Public publications appear in the square; private ones
+  stay readable for the owner and the Linkit users the owner authorizes as
+  readers at `/api/v1/documents/{document_id}/readers`. Authors can set an
+  imported document's publication time before or after publishing without
+  changing its Markdown revision.
 - Documents form a manual tree: any article can own sub-documents, a title can
   be dragged to re-order or re-parent it together with its subtree, and
   branches collapse and expand. Deleting a document deletes its sub-documents;
@@ -36,8 +39,10 @@ public square for anyone to read.
   same responsive sidebar and header layout. The sidebar includes the
   signed-in user's personal page at `#/u/{owner_id}`. Public articles are at
   `#/p/{document_id}`, and public document APIs are available at
-  `/api/public/documents` and `/api/public/documents/{document_id}`. A
-  signed-in article author can open its editor directly from the public reader.
+  `/api/public/documents` and `/api/public/documents/{document_id}`. Private
+  publications use the same reader for the owner and authorized readers;
+  everyone else receives a private-document notice. A signed-in article
+  author can open its editor directly from the public reader.
 - Readers can post comments on a whole published article or select a passage
   for an anchored inline comment. Comments are scoped to the published
   Markdown revision and the language being read; public reads use
