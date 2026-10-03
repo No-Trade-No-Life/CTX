@@ -131,6 +131,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { CtxMark } from "@/components/ctx-mark"
 import { DocumentTree } from "@/components/document-tree"
 import { MarkdownEditor } from "@/components/markdown-editor"
 import { Separator } from "@/components/ui/separator"
@@ -258,13 +259,7 @@ function PublicShell() {
               className="h-12 w-full justify-start gap-2 px-1.5 group-data-[collapsible=icon]:px-0"
               onClick={() => navigate("/square")}
             >
-              <img
-                src="/logo.svg?v=block"
-                alt=""
-                width={32}
-                height={32}
-                className="size-8 shrink-0 group-data-[collapsible=icon]:size-7"
-              />
+              <CtxMark className="size-8 shrink-0 group-data-[collapsible=icon]:size-7" />
               <span className="font-semibold group-data-[collapsible=icon]:hidden">
                 {t("appName")}
               </span>
@@ -409,13 +404,7 @@ function CtxShell({ token }: { token: string }) {
               className="h-12 w-full justify-start gap-2 px-1.5 group-data-[collapsible=icon]:px-0"
               onClick={() => navigate("/documents")}
             >
-              <img
-                src="/logo.svg?v=block"
-                alt=""
-                width={32}
-                height={32}
-                className="size-8 shrink-0 group-data-[collapsible=icon]:size-7"
-              />
+              <CtxMark className="size-8 shrink-0 group-data-[collapsible=icon]:size-7" />
               <span className="font-semibold group-data-[collapsible=icon]:hidden">
                 {t("appName")}
               </span>
