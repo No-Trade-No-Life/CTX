@@ -28,21 +28,20 @@ Geist is the UI face. The editing canvas uses a measured 16px body and a 72ch pr
 
 ## Logo
 
-`web/public/logo.svg` is the shared, transparent 1:1 brand mark and favicon.
-It depicts one cobalt building block with a single raised stud, using solid
-geometric faces and no visible text. Its 64 × 64 viewBox keeps the silhouette
-legible at favicon sizes without relying on lettering or thin strokes.
+`web/public/ctx-mark.svg` is the shared, transparent 1:1 brand mark and
+favicon. It depicts one crossing X: two diagonal strokes in a single 9/64
+round-capped stroke, the same stroke family as the Cybion triangle and the
+NormAI circle. Its 64 × 64 viewBox keeps the silhouette legible at favicon
+sizes without relying on lettering or thin strokes.
 
-Both sidebar headers display the mark at 32 × 32 px alongside the semibold
-product name CTX. Collapsed rails show only the mark at 28 × 28 px. They use
-the same `/logo.svg?v=block` URL as the favicon; the
-version query refreshes previously cached wordmarks when this design ships.
+Both sidebar headers render an inline `CtxMark` component at 32 × 32 px
+alongside the semibold product name CTX; collapsed rails show only the mark at
+28 × 28 px. The component draws in `currentColor`, so the mark follows the
+active theme, including manual theme switches and the existing `D` shortcut.
 
-The SVG has its own light and dark palettes for standalone use. The page sets
-`color-scheme` with the active theme so the sidebar image's
-`prefers-color-scheme` follows manual theme changes, including the existing
-`D` shortcut. The favicon follows the browser's color scheme. Neither surface
-requires extra theme state or animation.
+The favicon file carries its own `prefers-color-scheme` palette: black in
+light, white in dark. The browser tab therefore follows the system scheme, and
+neither surface requires extra theme state or animation.
 
 ## Layout and components
 
