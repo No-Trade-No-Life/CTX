@@ -65,7 +65,7 @@ impl App {
         tokio::spawn(async move {
             ai::run_worker(worker_database).await;
         });
-        let app = web::router(self.database, auth);
+        let app = web::router(self.database, &auth);
         let listener = tokio::net::TcpListener::bind(address).await?;
         axum::serve(listener, app).await?;
         Ok(())

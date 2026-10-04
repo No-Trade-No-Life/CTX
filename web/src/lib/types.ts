@@ -234,3 +234,13 @@ export type SystemResources = {
     freelist_percent: number
   }
 }
+
+export type ApiKey = {
+  id: string
+  label: string
+  prefix: string
+  created_at: number
+  last_used_at: number | null
+}
+
+export type CreatedApiKey = ApiKey & { secret: string }

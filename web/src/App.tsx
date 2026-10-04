@@ -27,6 +27,7 @@ import {
   FileTextIcon,
   Globe2Icon,
   HardDriveIcon,
+  KeyRoundIcon,
   LanguagesIcon,
   LoaderCircleIcon,
   LockIcon,
@@ -79,6 +80,8 @@ import type {
   AiConfiguration,
   AiRequest,
   AiRun,
+  ApiKey,
+  CreatedApiKey,
   DailyTimelineEntry,
   Document,
   DocumentComment,
@@ -294,6 +297,19 @@ function PublicShell() {
                       {t("navigationPersonalPage")}
                     </NavItem>
                   ) : null}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+            <SidebarGroup>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <NavItem
+                    active={location.pathname === "/settings/api-keys"}
+                    icon={KeyRoundIcon}
+                    onClick={() => navigate("/settings/api-keys")}
+                  >
+                    {t("navigationApiKeys")}
+                  </NavItem>
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
@@ -542,6 +558,10 @@ function CtxShell({ token }: { token: string }) {
                   <Navigate to="/documents" replace />
                 )
               }
+            />
+            <Route
+              path="/settings/api-keys"
+              element={<ApiKeysPage token={token} />}
             />
             <Route path="*" element={<Navigate to="/documents" replace />} />
           </Routes>
@@ -3628,6 +3648,250 @@ function SetupPage({ token, onDone }: { token: string; onDone: () => void }) {
   )
 }
 
+function ApiKeysPage({ token }: { token: string }) {
+  const { locale, t } = useI18n()
+  const queryClient = useQueryClient()
+  const [createOpen, setCreateOpen] = useState(false)
+  const [label, setLabel] = useState("")
+  const [created, setCreated] = useState<CreatedApiKey | null>(null)
+  const [revoking, setRevoking] = useState<ApiKey | null>(null)
+  const keys = useQuery({
+    queryKey: ["api-keys", token],
+    queryFn: () => request<ApiKey[]>("/api/v1/api-keys", token),
+  })
+  const create = useMutation({
+    mutationFn: () =>
+      request<CreatedApiKey>("/api/v1/api-keys", token, {
+        method: "POST",
+        body: JSON.stringify({ label: label.trim() }),
+      }),
+    onSuccess: (key) => {
+      setCreated(key)
+      setLabel("")
+      void queryClient.invalidateQueries({ queryKey: ["api-keys", token] })
+    },
+    onError: showError,
+  })
+  const revoke = useMutation({
+    mutationFn: (id: string) =>
+      request<void>(`/api/v1/api-keys/${encodeURIComponent(id)}`, token, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      toast.success(t("apiKeyRevoked"))
+      void queryClient.invalidateQueries({ queryKey: ["api-keys", token] })
+    },
+    onError: showError,
+  })
+
+  return (
+    <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 p-4 md:p-6">
+      <section className="flex flex-wrap items-end justify-between gap-4">
+        <div className="max-w-2xl">
+          <h1 className="text-2xl font-semibold tracking-tight text-balance">
+            {t("apiKeysTitle")}
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            {t("apiKeysDescription")}
+          </p>
+        </div>
+        <Button
+          onClick={() => {
+            setCreated(null)
+            setLabel("")
+            setCreateOpen(true)
+          }}
+        >
+          <PlusIcon data-icon="inline-start" />
+          {t("createApiKey")}
+        </Button>
+      </section>
+      {keys.isPending ? (
+        <PageSkeleton />
+      ) : keys.error ? (
+        <PageError error={keys.error} />
+      ) : (keys.data ?? []).length === 0 ? (
+        <Empty className="min-h-60">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <KeyRoundIcon />
+            </EmptyMedia>
+            <EmptyTitle>{t("apiKeysEmpty")}</EmptyTitle>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <Card>
+          <CardContent className="divide-y">
+            {(keys.data ?? []).map((key) => (
+              <div
+                key={key.id}
+                className="flex flex-wrap items-center justify-between gap-3 py-4 first:pt-0 last:pb-0"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{key.label}</p>
+                  <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+                    {key.prefix}…
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("apiKeyCreatedAt").replace(
+                      "{date}",
+                      formatDate(key.created_at, locale)
+                    )}
+                    {" · "}
+                    {key.last_used_at
+                      ? t("apiKeyLastUsed").replace(
+                          "{date}",
+                          formatDate(key.last_used_at, locale)
+                        )
+                      : t("apiKeyNeverUsed")}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRevoking(key)}
+                >
+                  {t("apiKeyRevoke")}
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open)
+          if (!open) {
+            setCreated(null)
+            setLabel("")
+          }
+        }}
+      >
+        <DialogContent>
+          {created ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>{t("apiKeySecretTitle")}</DialogTitle>
+                <DialogDescription>
+                  {t("apiKeySecretDescription")}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="rounded-md border bg-muted/40 p-3">
+                <code className="break-all font-mono text-sm">
+                  {created.secret}
+                </code>
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    void navigator.clipboard
+                      .writeText(created.secret)
+                      .then(() => toast.success(t("apiKeyCopied")))
+                      .catch(showError)
+                  }}
+                >
+                  <CopyIcon data-icon="inline-start" />
+                  {t("apiKeyCopy")}
+                </Button>
+                <Button onClick={() => setCreateOpen(false)}>
+                  {t("close")}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                if (label.trim() && !create.isPending) create.mutate()
+              }}
+            >
+              <DialogHeader>
+                <DialogTitle>{t("apiKeyCreateTitle")}</DialogTitle>
+                <DialogDescription>
+                  {t("apiKeyCreateDescription")}
+                </DialogDescription>
+              </DialogHeader>
+              <Field className="py-2">
+                <FieldLabel htmlFor="api-key-label">
+                  {t("apiKeyLabel")}
+                </FieldLabel>
+                <Input
+                  id="api-key-label"
+                  value={label}
+                  onChange={(event) => setLabel(event.target.value)}
+                  placeholder={t("apiKeyLabelPlaceholder")}
+                  autoFocus
+                />
+              </Field>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setCreateOpen(false)}
+                >
+                  {t("cancel")}
+                </Button>
+                <Button disabled={!label.trim() || create.isPending}>
+                  {create.isPending ? (
+                    <LoaderCircleIcon
+                      className="animate-spin"
+                      data-icon="inline-start"
+                    />
+                  ) : null}
+                  {t("createApiKey")}
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={revoking !== null}
+        onOpenChange={(open) => {
+          if (!open) setRevoking(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("apiKeyRevokeTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("apiKeyRevokeDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRevoking(null)}>
+              {t("cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={revoke.isPending}
+              onClick={() => {
+                if (revoking) {
+                  revoke.mutate(revoking.id, {
+                    onSuccess: () => setRevoking(null),
+                  })
+                }
+              }}
+            >
+              {revoke.isPending ? (
+                <LoaderCircleIcon
+                  className="animate-spin"
+                  data-icon="inline-start"
+                />
+              ) : null}
+              {t("apiKeyRevokeConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </main>
+  )
+}
+
 function SystemResourcesPage({ token }: { token: string }) {
   const { locale, t } = useI18n()
   const resources = useQuery({
@@ -4417,8 +4681,10 @@ function pageTitle(
       | "pageTitleEditor"
       | "pageTitleAiRequests"
       | "pageTitleSystemResources"
+      | "pageTitleApiKeys"
   ) => string
 ) {
+  if (pathname === "/settings/api-keys") return t("pageTitleApiKeys")
   if (pathname === "/admin/system-resources")
     return t("pageTitleSystemResources")
   if (pathname === "/admin/ai-requests") return t("pageTitleAiRequests")
