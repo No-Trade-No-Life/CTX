@@ -4,14 +4,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use auth_mini_axum::{AuthMiniLayer, AuthMiniPrincipal, AuthMiniVerifier};
+use auth_mini_axum::{AuthMiniLayer, AuthMiniVerifier};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, Extension, Path, Query, State},
+    extract::{DefaultBodyLimit, Extension, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use reqwest::Url;
 use rust_embed::RustEmbed;
@@ -20,11 +21,12 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tower_http::trace::TraceLayer;
+use uuid::Uuid;
 
 use crate::{
     ai::{self, AiTask},
     db::{
-        AiConfiguration, AiRequest, AiRun, CreateDocumentOutcome, Database, DatabaseError,
+        AiConfiguration, AiRequest, AiRun, ApiKey, CreateDocumentOutcome, Database, DatabaseError,
         Document, DocumentComment, DocumentDetail, DocumentMove, DocumentReader, DocumentSave,
         MoveDocumentOutcome, NewDocument, NewDocumentComment, PublicDocumentDetail,
         PublicDocumentSummary, PublicUserProfile, ReadDocumentOutcome,
@@ -41,6 +43,57 @@ struct AppState {
     auth_verifier: AuthMiniVerifier,
 }
 
+#[derive(Clone, Debug)]
+struct Principal {
+    user_id: String,
+}
+
+async fn request_auth(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    match request_principal(&state, request.headers()).await {
+        Ok(principal) => {
+            request.extensions_mut().insert(principal);
+            next.run(request).await
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn request_principal(state: &AppState, headers: &HeaderMap) -> Result<Principal, ApiError> {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| ApiError::unauthorized("invalid or expired bearer token"))?;
+    let Some(rest) = token.strip_prefix("ctx_") else {
+        let principal = state
+            .auth_verifier
+            .verify(token)
+            .await
+            .map_err(|_| ApiError::unauthorized("invalid or expired bearer token"))?;
+        return Ok(Principal {
+            user_id: principal.subject,
+        });
+    };
+    let Some((user_id, secret)) = rest
+        .split_once('_')
+        .filter(|(user_id, secret)| !user_id.is_empty() && !secret.is_empty())
+    else {
+        return Err(ApiError::unauthorized("invalid API key"));
+    };
+    state
+        .database
+        .authenticate_api_key(user_id, &hash_secret(secret))?
+        .map(|_| Principal {
+            user_id: user_id.to_owned(),
+        })
+        .ok_or_else(|| ApiError::unauthorized("invalid API key"))
+}
+
+fn hash_secret(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
 const MAX_IMAGE_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 const PUBLIC_MEDIA_BASE_URL: &str = "https://ctx.ntnl.io/media";
 
@@ -48,7 +101,7 @@ const PUBLIC_MEDIA_BASE_URL: &str = "https://ctx.ntnl.io/media";
 #[folder = "web/dist/"]
 struct WebAssets;
 
-pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
+pub fn router(database: Database, auth: &AuthMiniLayer) -> Router {
     let media_directory = Arc::new(database.media_directory());
     let state = AppState {
         resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
@@ -99,7 +152,9 @@ pub fn router(database: Database, auth: AuthMiniLayer) -> Router {
         .route("/admin/ai/test", post(test_ai_configuration))
         .route("/admin/ai/requests", get(list_ai_requests))
         .route("/admin/system-resources", get(system_resources))
-        .route_layer(auth);
+        .route("/api-keys", get(list_api_keys).post(create_api_key))
+        .route("/api-keys/{id}", delete(delete_api_key))
+        .route_layer(middleware::from_fn_with_state(state.clone(), request_auth));
     Router::new()
         .route("/api/health", get(health))
         .route("/media/{media_id}", get(public_media))
@@ -125,53 +180,108 @@ async fn health() -> Json<Value> {
 
 async fn me(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
 ) -> Result<Json<Me>, ApiError> {
     let root_user_id = state.database.root_user_id()?;
     Ok(Json(Me {
-        user_id: principal.subject.clone(),
-        is_root: root_user_id.as_deref() == Some(&principal.subject),
+        user_id: principal.user_id.clone(),
+        is_root: root_user_id.as_deref() == Some(&principal.user_id),
         setup_required: root_user_id.is_none(),
     }))
 }
 
 async fn setup_root(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
 ) -> Result<Json<Me>, ApiError> {
     let root_user_id = state.database.root_user_id()?;
     if let Some(root_user_id) = root_user_id {
-        if root_user_id != principal.subject {
+        if root_user_id != principal.user_id {
             return Err(ApiError::forbidden(
                 "root user has already been initialized",
             ));
         }
     } else {
-        state.database.initialize_root_user(&principal.subject)?;
+        state.database.initialize_root_user(&principal.user_id)?;
     }
     Ok(Json(Me {
-        user_id: principal.subject,
+        user_id: principal.user_id,
         is_root: true,
         setup_required: false,
     }))
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateApiKeyInput {
+    label: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreatedApiKey {
+    #[serde(flatten)]
+    key: ApiKey,
+    secret: String,
+}
+
+async fn list_api_keys(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Vec<ApiKey>>, ApiError> {
+    Ok(Json(state.database.list_api_keys(&principal.user_id)?))
+}
+
+async fn create_api_key(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Json(input): Json<CreateApiKeyInput>,
+) -> Result<(StatusCode, Json<CreatedApiKey>), ApiError> {
+    let label = input.label.trim();
+    if label.is_empty() || label.chars().count() > 80 {
+        return Err(ApiError::bad_request("label must be 1-80 characters"));
+    }
+    let secret = Uuid::new_v4().simple().to_string();
+    let prefix = secret[..10].to_owned();
+    let key =
+        state
+            .database
+            .create_api_key(&principal.user_id, label, &prefix, &hash_secret(&secret))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedApiKey {
+            key,
+            secret: format!("ctx_{}_{}", principal.user_id, secret),
+        }),
+    ))
+}
+
+async fn delete_api_key(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if state.database.revoke_api_key(&principal.user_id, &id)? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found())
+    }
+}
+
 async fn list_documents(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
 ) -> Result<Json<Vec<Document>>, ApiError> {
-    Ok(Json(state.database.list_documents(&principal.subject)?))
+    Ok(Json(state.database.list_documents(&principal.user_id)?))
 }
 
 async fn create_document(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Json(input): Json<DocumentInput>,
 ) -> Result<(StatusCode, Json<DocumentDetail>), ApiError> {
     validate_document_input(&input)?;
     let source_language = source_language_or_und(input.source_language.as_deref())?;
     let outcome = state.database.create_document(&NewDocument {
-        author_id: &principal.subject,
+        author_id: &principal.user_id,
         title: input.title.trim(),
         source_language: &source_language,
         content: input.content.as_deref().unwrap_or_default(),
@@ -195,7 +305,7 @@ struct MediaUpload {
 
 async fn upload_media(
     State(state): State<AppState>,
-    Extension(_principal): Extension<AuthMiniPrincipal>,
+    Extension(_principal): Extension<Principal>,
     content: Bytes,
 ) -> Result<(StatusCode, Json<MediaUpload>), ApiError> {
     image_content_type(&content).ok_or_else(|| {
@@ -213,14 +323,14 @@ async fn upload_media(
 
 async fn profile_document(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
 ) -> Result<Json<DocumentDetail>, ApiError> {
-    Ok(Json(state.database.profile_document(&principal.subject)?))
+    Ok(Json(state.database.profile_document(&principal.user_id)?))
 }
 
 async fn get_document(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
 ) -> Result<Json<DocumentDetail>, ApiError> {
     Ok(Json(require_document_owner(
@@ -232,7 +342,7 @@ async fn get_document(
 
 async fn save_document(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
     Json(input): Json<DocumentUpdateInput>,
 ) -> Result<Json<DocumentDetail>, ApiError> {
@@ -246,7 +356,7 @@ async fn save_document(
         .database
         .save_document(&DocumentSave {
             id: &document_id,
-            author_id: &principal.subject,
+            author_id: &principal.user_id,
             title: input.title.trim(),
             source_language: &source_language,
             content: &input.content,
@@ -262,7 +372,7 @@ async fn save_document(
 
 async fn move_document(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
     Json(input): Json<DocumentMoveInput>,
 ) -> Result<Json<DocumentDetail>, ApiError> {
@@ -281,7 +391,7 @@ async fn move_document(
 
 async fn delete_document(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     require_document_owner(&state.database, &principal, &document_id)?;
@@ -294,7 +404,7 @@ async fn delete_document(
 
 async fn publication_time(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
 ) -> Result<Json<PublicationTime>, ApiError> {
     require_document_owner(&state.database, &principal, &document_id)?;
@@ -304,7 +414,7 @@ async fn publication_time(
 
 async fn update_publication_time(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
     Json(input): Json<PublicationTimeInput>,
 ) -> Result<Json<PublicationTime>, ApiError> {
@@ -326,7 +436,7 @@ struct PublishDocumentInput {
 
 async fn publish_document(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
     Json(input): Json<PublishDocumentInput>,
 ) -> Result<Json<Document>, ApiError> {
@@ -342,7 +452,7 @@ async fn publish_document(
 
 async fn list_document_readers(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
 ) -> Result<Json<Vec<DocumentReader>>, ApiError> {
     require_document_owner(&state.database, &principal, &document_id)?;
@@ -351,7 +461,7 @@ async fn list_document_readers(
 
 async fn grant_document_reader(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path((document_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     require_document_owner(&state.database, &principal, &document_id)?;
@@ -367,7 +477,7 @@ async fn grant_document_reader(
 
 async fn revoke_document_reader(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path((document_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     require_document_owner(&state.database, &principal, &document_id)?;
@@ -379,7 +489,7 @@ async fn revoke_document_reader(
 
 async fn trigger_profile_summaries(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
     Json(input): Json<ProfileSummaryTaskInput>,
 ) -> Result<(StatusCode, Json<ProfileSummaryTaskResponse>), ApiError> {
@@ -412,7 +522,7 @@ async fn trigger_profile_summaries(
 
 async fn run_ai_task(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
     Json(input): Json<AiTaskInput>,
 ) -> Result<Json<AiRun>, ApiError> {
@@ -433,7 +543,7 @@ async fn run_ai_task(
 
 async fn get_ai_configuration(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
 ) -> Result<Json<AiConfiguration>, ApiError> {
     Actor::from_principal(&state.database, &principal)?.assert_root()?;
     Ok(Json(state.database.ai_configuration()?))
@@ -441,7 +551,7 @@ async fn get_ai_configuration(
 
 async fn update_ai_configuration(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Json(input): Json<AiConfigurationInput>,
 ) -> Result<Json<AiConfiguration>, ApiError> {
     Actor::from_principal(&state.database, &principal)?.assert_root()?;
@@ -460,7 +570,7 @@ async fn update_ai_configuration(
 
 async fn test_ai_configuration(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Json(input): Json<AiConfigurationInput>,
 ) -> Result<Json<AiConfigurationTest>, ApiError> {
     Actor::from_principal(&state.database, &principal)?.assert_root()?;
@@ -499,7 +609,7 @@ fn validate_ai_base_url(value: &str) -> Result<String, ApiError> {
 
 async fn list_ai_requests(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
 ) -> Result<Json<Vec<AiRequest>>, ApiError> {
     Actor::from_principal(&state.database, &principal)?.assert_root()?;
     Ok(Json(state.database.ai_requests()?))
@@ -507,7 +617,7 @@ async fn list_ai_requests(
 
 async fn system_resources(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
 ) -> Result<Json<SystemResourcesSnapshot>, ApiError> {
     Actor::from_principal(&state.database, &principal)?.assert_root()?;
     let mut monitor = state
@@ -583,7 +693,7 @@ async fn public_comments(
 
 async fn create_public_comment(
     State(state): State<AppState>,
-    Extension(principal): Extension<AuthMiniPrincipal>,
+    Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
     Json(input): Json<DocumentCommentInput>,
 ) -> Result<(StatusCode, Json<DocumentComment>), ApiError> {
@@ -595,7 +705,7 @@ async fn create_public_comment(
         .database
         .create_public_comment(&NewDocumentComment {
             document_id: &document_id,
-            author_id: &principal.subject,
+            author_id: &principal.user_id,
             language: &language,
             content: input.content.trim(),
             quote: anchor.map(|anchor| anchor.quote.trim()),
@@ -806,12 +916,9 @@ struct Actor {
 }
 
 impl Actor {
-    fn from_principal(
-        database: &Database,
-        principal: &AuthMiniPrincipal,
-    ) -> Result<Self, ApiError> {
+    fn from_principal(database: &Database, principal: &Principal) -> Result<Self, ApiError> {
         Ok(Self {
-            is_root: database.root_user_id()?.as_deref() == Some(&principal.subject),
+            is_root: database.root_user_id()?.as_deref() == Some(&principal.user_id),
         })
     }
 
@@ -826,13 +933,13 @@ impl Actor {
 
 fn require_document_owner(
     database: &Database,
-    principal: &AuthMiniPrincipal,
+    principal: &Principal,
     document_id: &str,
 ) -> Result<DocumentDetail, ApiError> {
     let document = database
         .get_document(document_id)?
         .ok_or_else(ApiError::not_found)?;
-    if document.document.owner_id == principal.subject {
+    if document.document.owner_id == principal.user_id {
         Ok(document)
     } else {
         Err(ApiError::forbidden(
@@ -939,6 +1046,8 @@ enum ApiError {
     Forbidden(String),
     #[error("not found")]
     NotFound,
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
     #[error("conflict: the document changed before publication completed")]
     Conflict,
     #[error("unavailable: {0}")]
@@ -963,6 +1072,9 @@ impl ApiError {
     fn not_found() -> Self {
         Self::NotFound
     }
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self::Unauthorized(message.into())
+    }
     fn conflict() -> Self {
         Self::Conflict
     }
@@ -977,6 +1089,7 @@ impl IntoResponse for ApiError {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Conflict => StatusCode::CONFLICT,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Database(_) | Self::Ai(_) | Self::Resource(_) => StatusCode::BAD_GATEWAY,
@@ -990,14 +1103,14 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, WebAssets, image_content_type, is_media_id, public_media, publication_visibility,
-        requested_language, source_language_or_und, static_asset, store_media,
-        validate_ai_base_url,
+        AppState, WebAssets, hash_secret, image_content_type, is_media_id, public_media,
+        publication_visibility, request_principal, requested_language, source_language_or_und,
+        static_asset, store_media, validate_ai_base_url,
     };
     use crate::{db::Database, resources::ResourceMonitor};
     use axum::{
         extract::{Path, State},
-        http::{StatusCode, Uri, header},
+        http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     };
     use std::sync::{Arc, Mutex};
 
@@ -1119,5 +1232,51 @@ mod tests {
             response.headers()[header::CACHE_CONTROL],
             "public, max-age=31536000, immutable"
         );
+    }
+
+    fn test_state(database: Database) -> AppState {
+        AppState {
+            media_directory: Arc::new(database.media_directory()),
+            resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
+            database,
+            auth_verifier: test_auth_verifier(),
+        }
+    }
+
+    #[tokio::test]
+    async fn api_keys_authenticate_the_private_api_without_auth_mini() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let created = database
+            .create_api_key("user-a", "Cybion", "0123456789", &hash_secret("secret"))
+            .unwrap();
+        let state = test_state(database);
+        let headers = HeaderMap::from_iter([(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer ctx_user-a_secret"),
+        )]);
+
+        let principal = request_principal(&state, &headers).await.unwrap();
+        assert_eq!(principal.user_id, "user-a");
+
+        let wrong_secret = HeaderMap::from_iter([(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer ctx_user-a-other"),
+        )]);
+        assert!(request_principal(&state, &wrong_secret).await.is_err());
+
+        let wrong_user = HeaderMap::from_iter([(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer ctx_user-b_secret"),
+        )]);
+        assert!(request_principal(&state, &wrong_user).await.is_err());
+
+        assert!(
+            state
+                .database
+                .revoke_api_key("user-a", &created.id)
+                .unwrap()
+        );
+        assert!(request_principal(&state, &headers).await.is_err());
     }
 }

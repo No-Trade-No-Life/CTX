@@ -98,6 +98,16 @@ const CURRENT_TABLES_SQL: &str = "
         created_at INTEGER NOT NULL,
         PRIMARY KEY (document_id, user_id)
     );
+    CREATE TABLE IF NOT EXISTS api_keys (
+        id TEXT PRIMARY KEY NOT NULL,
+        user_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        prefix TEXT NOT NULL,
+        secret_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        revoked_at INTEGER
+    );
 ";
 
 const CURRENT_INDEXES_SQL: &str = "
@@ -113,6 +123,7 @@ const CURRENT_INDEXES_SQL: &str = "
     CREATE INDEX IF NOT EXISTS ai_requests_document_idx ON ai_requests(document_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS document_comments_document_idx ON document_comments(document_id, source_revision_id, language, created_at, id);
     CREATE INDEX IF NOT EXISTS document_readers_user_idx ON document_readers(user_id, document_id);
+    CREATE INDEX IF NOT EXISTS api_keys_user_idx ON api_keys(user_id, created_at DESC);
 ";
 
 const DOCUMENT_DETAIL_SQL: &str = "SELECT d.id, d.owner_id, d.title, d.source_language, d.status, d.visibility, d.document_kind, d.metadata_json, d.current_revision_id, d.published_revision_id, d.published_source_language, d.created_at, d.updated_at, d.parent_id, d.sort_key, r.id, r.document_id, r.content, r.message, r.author_id, r.created_at FROM documents d JOIN document_revisions r ON r.id = d.current_revision_id AND r.document_id = d.id WHERE d.id = ?1";
@@ -385,6 +396,15 @@ pub struct DocumentReader {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ApiKey {
+    pub id: String,
+    pub label: String,
+    pub prefix: String,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DocumentComment {
     pub id: String,
     pub document_id: String,
@@ -562,6 +582,71 @@ impl Database {
             "INSERT INTO app_meta(key, value) VALUES ('root_user_id', ?1) ON CONFLICT(key) DO NOTHING",
             [user_id],
         )? == 1)
+    }
+
+    pub fn create_api_key(
+        &self,
+        user_id: &str,
+        label: &str,
+        prefix: &str,
+        secret_hash: &str,
+    ) -> Result<ApiKey, DatabaseError> {
+        let key = ApiKey {
+            id: Uuid::new_v4().to_string(),
+            label: label.to_owned(),
+            prefix: prefix.to_owned(),
+            created_at: now(),
+            last_used_at: None,
+        };
+        self.connection()?.execute(
+            "INSERT INTO api_keys(id, user_id, label, prefix, secret_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![key.id, user_id, key.label, key.prefix, secret_hash, key.created_at],
+        )?;
+        Ok(key)
+    }
+
+    pub fn list_api_keys(&self, user_id: &str) -> Result<Vec<ApiKey>, DatabaseError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, label, prefix, created_at, last_used_at FROM api_keys WHERE user_id = ?1 AND revoked_at IS NULL ORDER BY created_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map([user_id], api_key_from_row)?;
+        let mut keys = Vec::new();
+        for row in rows {
+            keys.push(row?);
+        }
+        Ok(keys)
+    }
+
+    pub fn revoke_api_key(&self, user_id: &str, id: &str) -> Result<bool, DatabaseError> {
+        let changed = self.connection()?.execute(
+            "UPDATE api_keys SET revoked_at = ?3 WHERE id = ?1 AND user_id = ?2 AND revoked_at IS NULL",
+            params![id, user_id, now()],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn authenticate_api_key(
+        &self,
+        user_id: &str,
+        secret_hash: &str,
+    ) -> Result<Option<String>, DatabaseError> {
+        let connection = self.connection()?;
+        let key_id: Option<String> = connection
+            .query_row(
+                "SELECT id FROM api_keys WHERE user_id = ?1 AND secret_hash = ?2 AND revoked_at IS NULL",
+                params![user_id, secret_hash],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(key_id) = key_id else {
+            return Ok(None);
+        };
+        connection.execute(
+            "UPDATE api_keys SET last_used_at = ?2 WHERE id = ?1",
+            params![key_id, now()],
+        )?;
+        Ok(Some(key_id))
     }
 
     pub fn ai_configuration(&self) -> Result<AiConfiguration, DatabaseError> {
@@ -2427,6 +2512,16 @@ fn verify_connection_foreign_keys(connection: &Connection) -> Result<(), Databas
     }
 }
 
+fn api_key_from_row(row: &Row<'_>) -> rusqlite::Result<ApiKey> {
+    Ok(ApiKey {
+        id: row.get(0)?,
+        label: row.get(1)?,
+        prefix: row.get(2)?,
+        created_at: row.get(3)?,
+        last_used_at: row.get(4)?,
+    })
+}
+
 fn document_from_row(row: &Row<'_>) -> rusqlite::Result<Document> {
     let metadata: String = row.get(7)?;
     Ok(Document {
@@ -2532,6 +2627,55 @@ fn sqlite_page_value(value: i64) -> Result<u64, DatabaseError> {
 mod tests {
     use rusqlite::{Connection, params};
     use serde_json::json;
+
+    #[test]
+    fn api_keys_create_authenticate_list_and_revoke() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let created = database
+            .create_api_key("user-a", "Cybion", "0123456789", &"a".repeat(64))
+            .unwrap();
+        let keys = database.list_api_keys("user-a").unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].id, created.id);
+        assert_eq!(keys[0].label, "Cybion");
+        assert_eq!(keys[0].prefix, "0123456789");
+        assert!(keys[0].last_used_at.is_none());
+
+        assert!(
+            database
+                .authenticate_api_key("user-a", &"b".repeat(64))
+                .unwrap()
+                .is_none()
+        );
+        let key_id = database
+            .authenticate_api_key("user-a", &"a".repeat(64))
+            .unwrap()
+            .unwrap();
+        assert_eq!(key_id, created.id);
+        assert!(
+            database.list_api_keys("user-a").unwrap()[0]
+                .last_used_at
+                .is_some()
+        );
+
+        assert!(!database.revoke_api_key("user-b", &created.id).unwrap());
+        assert!(
+            database
+                .authenticate_api_key("user-a", &"a".repeat(64))
+                .unwrap()
+                .is_some()
+        );
+        assert!(database.revoke_api_key("user-a", &created.id).unwrap());
+        assert!(!database.revoke_api_key("user-a", &created.id).unwrap());
+        assert!(
+            database
+                .authenticate_api_key("user-a", &"a".repeat(64))
+                .unwrap()
+                .is_none()
+        );
+        assert!(database.list_api_keys("user-a").unwrap().is_empty());
+    }
 
     use super::{
         CreateDocumentOutcome, Database, Document, DocumentDetail, DocumentMove, DocumentSave,

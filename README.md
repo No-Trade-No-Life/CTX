@@ -71,6 +71,10 @@ public square for anyone to read.
 - Root-only OpenAI-compatible routing configuration for `https://openai.ntnl.io/v1`.
   The server encrypts the configured API key with a host-local AES-GCM key; it
   is never returned to the browser.
+- Every user can create labeled API keys for machine clients such as Cybion.
+  A key's secret is shown once at creation, stored hashed, sent as
+  `Authorization: Bearer ctx_<user_id>_<secret>`, accepted by the same
+  authenticated API as browser sessions, and revocable at any time.
 - Publishing saves the original Markdown immediately, then queues auditable AI
   metadata extraction against that fixed revision. When a reader opens an
   unavailable UI language (`zh-CN`, `en-US`, `ja-JP`, or `es-ES`), CTX queues
