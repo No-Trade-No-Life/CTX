@@ -63,7 +63,7 @@ import { toast } from "sonner"
 
 import { cn } from "cn"
 
-import { ApiRequestError, request, upload } from "./lib/api"
+import { ApiRequestError, request, upload, type AuthSdk } from "./lib/api"
 import {
   clearDocumentDraft,
   clearNewDocumentDraft,
@@ -217,26 +217,25 @@ function LanguageSelect() {
   )
 }
 
-function useImageUpload(token: string) {
+function useImageUpload(auth: AuthSdk) {
   return useCallback(
     async (image: File) =>
-      (await upload<MediaUpload>("/api/v1/media", image, token)).url,
-    [token]
+      (await upload<MediaUpload>("/api/v1/media", image, auth)).url,
+    [auth]
   )
 }
 
 function PrivateApp() {
-  const { isReady, isAuthenticated, session } = useAuthMini()
-  if (!isReady || !isAuthenticated || !session?.accessToken)
-    return <LoadingPage />
-  return <CtxShell token={session.accessToken} />
+  const { isReady, isAuthenticated, sdk } = useAuthMini()
+  if (!isReady || !isAuthenticated || !sdk) return <LoadingPage />
+  return <CtxShell auth={sdk} />
 }
 
 function PublicShell() {
   const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
-  const { isReady, isAuthenticated, session } = useAuthMini()
+  const { isReady, isAuthenticated, sdk } = useAuthMini()
   const { t } = useI18n()
   const title = publicPageTitle(location.pathname, t)
   useBrowserTitle(
@@ -245,9 +244,9 @@ function PublicShell() {
       : title
   )
   const me = useQuery({
-    queryKey: ["me", session?.accessToken],
-    queryFn: () => request<Me>("/api/v1/me", session?.accessToken ?? undefined),
-    enabled: isReady && isAuthenticated && Boolean(session?.accessToken),
+    queryKey: ["me"],
+    queryFn: () => request<Me>("/api/v1/me", sdk ?? undefined),
+    enabled: isReady && isAuthenticated && Boolean(sdk),
   })
   const signedIn = Boolean(me.data && !me.data.setup_required)
 
@@ -388,7 +387,7 @@ function PublicShell() {
   )
 }
 
-function CtxShell({ token }: { token: string }) {
+function CtxShell({ auth }: { auth: AuthSdk }) {
   const queryClient = useQueryClient()
   const location = useLocation()
   const navigate = useNavigate()
@@ -398,8 +397,8 @@ function CtxShell({ token }: { token: string }) {
     location.pathname.startsWith("/documents/") ? undefined : title
   )
   const me = useQuery({
-    queryKey: ["me", token],
-    queryFn: () => request<Me>("/api/v1/me", token),
+    queryKey: ["me"],
+    queryFn: () => request<Me>("/api/v1/me", auth),
   })
   const refresh = () => void queryClient.invalidateQueries()
 
@@ -407,7 +406,7 @@ function CtxShell({ token }: { token: string }) {
   if (me.error) return <PageError error={me.error} />
   if (!me.data) return <LoadingPage />
   if (me.data.setup_required)
-    return <SetupPage token={token} onDone={refresh} />
+    return <SetupPage auth={auth} onDone={refresh} />
 
   return (
     <TooltipProvider>
@@ -519,21 +518,21 @@ function CtxShell({ token }: { token: string }) {
           <Routes>
             <Route
               path="/documents"
-              element={<DocumentListPage token={token} />}
+              element={<DocumentListPage auth={auth} />}
             />
             <Route
               path="/documents/new"
-              element={<NewDocumentPage token={token} />}
+              element={<NewDocumentPage auth={auth} />}
             />
             <Route
               path="/documents/:documentId"
-              element={<ExistingDocumentPage token={token} />}
+              element={<ExistingDocumentPage auth={auth} />}
             />
             <Route
               path="/admin"
               element={
                 me.data.is_root ? (
-                  <AdministrationPage token={token} />
+                  <AdministrationPage auth={auth} />
                 ) : (
                   <Navigate to="/documents" replace />
                 )
@@ -543,7 +542,7 @@ function CtxShell({ token }: { token: string }) {
               path="/admin/ai-requests"
               element={
                 me.data.is_root ? (
-                  <AiRequestAuditPage token={token} />
+                  <AiRequestAuditPage auth={auth} />
                 ) : (
                   <Navigate to="/documents" replace />
                 )
@@ -553,7 +552,7 @@ function CtxShell({ token }: { token: string }) {
               path="/admin/system-resources"
               element={
                 me.data.is_root ? (
-                  <SystemResourcesPage token={token} />
+                  <SystemResourcesPage auth={auth} />
                 ) : (
                   <Navigate to="/documents" replace />
                 )
@@ -561,7 +560,7 @@ function CtxShell({ token }: { token: string }) {
             />
             <Route
               path="/settings/api-keys"
-              element={<ApiKeysPage token={token} />}
+              element={<ApiKeysPage auth={auth} />}
             />
             <Route path="*" element={<Navigate to="/documents" replace />} />
           </Routes>
@@ -571,21 +570,21 @@ function CtxShell({ token }: { token: string }) {
   )
 }
 
-function DocumentListPage({ token }: { token: string }) {
+function DocumentListPage({ auth }: { auth: AuthSdk }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { locale, t } = useI18n()
   const documents = useQuery({
-    queryKey: ["documents", token],
-    queryFn: () => request<Document[]>("/api/v1/documents", token),
+    queryKey: ["documents"],
+    queryFn: () => request<Document[]>("/api/v1/documents", auth),
   })
   const profileDocument = useMutation({
     mutationFn: () =>
-      request<DocumentDetail>("/api/v1/profile-document", token, {
+      request<DocumentDetail>("/api/v1/profile-document", auth, {
         method: "POST",
       }),
     onSuccess: (detail) => {
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      void queryClient.invalidateQueries({ queryKey: ["documents"] })
       navigate(`/documents/${detail.document.id}`)
     },
     onError: showError,
@@ -667,7 +666,7 @@ function DocumentListPage({ token }: { token: string }) {
                   {t("documentsTreeHint")}
                 </p>
               ) : null}
-              <DocumentTree documents={articles} token={token} />
+              <DocumentTree documents={articles} auth={auth} />
             </>
           ) : null}
         </section>
@@ -736,15 +735,15 @@ function DocumentRow({
   )
 }
 
-function NewDocumentPage({ token }: { token: string }) {
+function NewDocumentPage({ auth }: { auth: AuthSdk }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { t } = useI18n()
   useBrowserTitle(t("newDocument"))
-  const imageUpload = useImageUpload(token)
+  const imageUpload = useImageUpload(auth)
   const documents = useQuery({
-    queryKey: ["documents", token],
-    queryFn: () => request<Document[]>("/api/v1/documents", token),
+    queryKey: ["documents"],
+    queryFn: () => request<Document[]>("/api/v1/documents", auth),
   })
   const [recoveredDraft] = useState(loadNewDocumentDraft)
   const [title, setTitle] = useState(recoveredDraft?.title ?? "")
@@ -770,7 +769,7 @@ function NewDocumentPage({ token }: { token: string }) {
   }, [recoveredDraft, t])
   const create = useMutation({
     mutationFn: () =>
-      request<DocumentDetail>("/api/v1/documents", token, {
+      request<DocumentDetail>("/api/v1/documents", auth, {
         method: "POST",
         body: JSON.stringify({
           title: title.trim(),
@@ -782,7 +781,7 @@ function NewDocumentPage({ token }: { token: string }) {
     onSuccess: (detail) => {
       clearNewDocumentDraft()
       toast.success(t("documentCreated"))
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      void queryClient.invalidateQueries({ queryKey: ["documents"] })
       navigate(`/documents/${detail.document.id}`, { replace: true })
     },
     onError: showError,
@@ -845,13 +844,13 @@ function NewDocumentPage({ token }: { token: string }) {
   )
 }
 
-function ExistingDocumentPage({ token }: { token: string }) {
+function ExistingDocumentPage({ auth }: { auth: AuthSdk }) {
   const { documentId = "" } = useParams()
   const { t } = useI18n()
   const document = useQuery({
-    queryKey: ["document", token, documentId],
+    queryKey: ["document", documentId],
     queryFn: () =>
-      request<DocumentDetail>(`/api/v1/documents/${documentId}`, token),
+      request<DocumentDetail>(`/api/v1/documents/${documentId}`, auth),
     enabled: Boolean(documentId),
     refetchInterval: (query) =>
       query.state.data?.document.status === "published" &&
@@ -866,20 +865,20 @@ function ExistingDocumentPage({ token }: { token: string }) {
       <PageError error={document.error ?? new Error(t("documentNotFound"))} />
     )
 
-  return <ExistingDocumentEditor token={token} detail={document.data} />
+  return <ExistingDocumentEditor auth={auth} detail={document.data} />
 }
 
 function ExistingDocumentEditor({
-  token,
+  auth,
   detail,
 }: {
-  token: string
+  auth: AuthSdk
   detail: DocumentDetail
 }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { t } = useI18n()
-  const imageUpload = useImageUpload(token)
+  const imageUpload = useImageUpload(auth)
   const isPublished = detail.document.status === "published"
   const [deleteArmed, setDeleteArmed] = useState(false)
   const [publishDialogOpen, setPublishDialogOpen] = useState(false)
@@ -907,8 +906,8 @@ function ExistingDocumentEditor({
   const savedDraftRef = useRef(savedServerDraft)
   const savedRevisionRef = useRef(detail.revision.id)
   const documents = useQuery({
-    queryKey: ["documents", token],
-    queryFn: () => request<Document[]>("/api/v1/documents", token),
+    queryKey: ["documents"],
+    queryFn: () => request<Document[]>("/api/v1/documents", auth),
   })
   const currentDraft = documentDraftFrom(title, sourceLanguage, content)
   const isDirty = !draftsMatch(currentDraft, savedDraft)
@@ -926,7 +925,7 @@ function ExistingDocumentEditor({
     (draft: DocumentDraft) =>
       request<DocumentDetail>(
         `/api/v1/documents/${detail.document.id}`,
-        token,
+        auth,
         {
           method: "PUT",
           body: JSON.stringify({
@@ -936,7 +935,7 @@ function ExistingDocumentEditor({
           }),
         }
       ),
-    [detail.document.id, token]
+    [detail.document.id, auth]
   )
   const markSaved = useCallback(
     (savedDetail: DocumentDetail, saved: DocumentDraft) => {
@@ -946,10 +945,10 @@ function ExistingDocumentEditor({
       setSavedRevisionId(savedDetail.revision.id)
       setAutosaveFailed(false)
       queryClient.setQueryData<DocumentDetail>(
-        ["document", token, detail.document.id],
+        ["document", detail.document.id],
         savedDetail
       )
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      void queryClient.invalidateQueries({ queryKey: ["documents"] })
       if (draftsMatch(draftRef.current, saved))
         clearDocumentDraft(detail.document.id)
       else
@@ -959,7 +958,7 @@ function ExistingDocumentEditor({
           draftRef.current
         )
     },
-    [detail.document.id, queryClient, token]
+    [detail.document.id, queryClient]
   )
   const save = useMutation({
     mutationFn: ({ draft }: { draft: DocumentDraft; notify: boolean }) =>
@@ -981,7 +980,7 @@ function ExistingDocumentEditor({
         : await saveCurrentRevision(draft)
       await request<Document>(
         `/api/v1/documents/${detail.document.id}/publish`,
-        token,
+        auth,
         {
           method: "POST",
           body: JSON.stringify({ visibility }),
@@ -996,29 +995,29 @@ function ExistingDocumentEditor({
           ? t("publishedPrivately")
           : t("publishedCurrentRevision")
       )
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      void queryClient.invalidateQueries({ queryKey: ["documents"] })
       void queryClient.invalidateQueries({
-        queryKey: ["document", token, detail.document.id],
+        queryKey: ["document", detail.document.id],
       })
       void queryClient.invalidateQueries({ queryKey: ["public-documents"] })
     },
     onError: (error) => {
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      void queryClient.invalidateQueries({ queryKey: ["documents"] })
       void queryClient.invalidateQueries({
-        queryKey: ["document", token, detail.document.id],
+        queryKey: ["document", detail.document.id],
       })
       showError(error)
     },
   })
   const remove = useMutation({
     mutationFn: () =>
-      request<void>(`/api/v1/documents/${detail.document.id}`, token, {
+      request<void>(`/api/v1/documents/${detail.document.id}`, auth, {
         method: "DELETE",
       }),
     onSuccess: () => {
       clearDocumentDraft(detail.document.id)
       toast.success(t("documentDeleted"))
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      void queryClient.invalidateQueries({ queryKey: ["documents"] })
       void queryClient.invalidateQueries({ queryKey: ["public-documents"] })
       void queryClient.invalidateQueries({
         queryKey: ["public-document", detail.document.id],
@@ -1267,7 +1266,7 @@ function ExistingDocumentEditor({
           onImageUpload={imageUpload}
           onBlur={saveAfterBlur}
         />
-        <PublicationTimeEditor token={token} documentId={detail.document.id} />
+        <PublicationTimeEditor auth={auth} documentId={detail.document.id} />
       </section>
       <aside className="min-w-0 xl:pt-14">
         <EditorialMetadata
@@ -1279,14 +1278,14 @@ function ExistingDocumentEditor({
         />
         {isPublished ? (
           <VisibilityCard
-            token={token}
+            auth={auth}
             detail={detail}
             isSwitching={publish.isPending}
             onSetVisibility={publishCurrentRevision}
           />
         ) : null}
         <AiPanel
-          token={token}
+          auth={auth}
           detail={detail}
           title={title}
           sourceLanguage={sourceLanguage}
@@ -1502,20 +1501,20 @@ function EditorFields({
 }
 
 function PublicationTimeEditor({
-  token,
+  auth,
   documentId,
 }: {
-  token: string
+  auth: AuthSdk
   documentId: string
 }) {
   const queryClient = useQueryClient()
   const { t } = useI18n()
   const publicationTime = useQuery({
-    queryKey: ["publication-time", token, documentId],
+    queryKey: ["publication-time", documentId],
     queryFn: () =>
       request<PublicationTime>(
         `/api/v1/documents/${documentId}/publication`,
-        token
+        auth
       ),
   })
   const [value, setValue] = useState<string | null>(null)
@@ -1528,7 +1527,7 @@ function PublicationTimeEditor({
     mutationFn: () =>
       request<PublicationTime>(
         `/api/v1/documents/${documentId}/publication`,
-        token,
+        auth,
         {
           method: "PUT",
           body: JSON.stringify({
@@ -1596,12 +1595,12 @@ function PublicationTimeEditor({
 }
 
 function VisibilityCard({
-  token,
+  auth,
   detail,
   isSwitching,
   onSetVisibility,
 }: {
-  token: string
+  auth: AuthSdk
   detail: DocumentDetail
   isSwitching: boolean
   onSetVisibility: (visibility: DocumentVisibility) => void
@@ -1610,13 +1609,13 @@ function VisibilityCard({
   const queryClient = useQueryClient()
   const documentId = detail.document.id
   const isPrivate = detail.document.visibility === "private"
-  const queryKey = ["document-readers", token, documentId]
+  const queryKey = ["document-readers", documentId]
   const readers = useQuery({
     queryKey,
     queryFn: () =>
       request<DocumentReader[]>(
         `/api/v1/documents/${documentId}/readers`,
-        token
+        auth
       ),
     enabled: isPrivate,
   })
@@ -1625,7 +1624,7 @@ function VisibilityCard({
     mutationFn: (userId: string) =>
       request<void>(
         `/api/v1/documents/${documentId}/readers/${encodeURIComponent(userId)}`,
-        token,
+        auth,
         { method: "PUT" }
       ),
     onSuccess: invalidate,
@@ -1635,7 +1634,7 @@ function VisibilityCard({
     mutationFn: (userId: string) =>
       request<void>(
         `/api/v1/documents/${documentId}/readers/${encodeURIComponent(userId)}`,
-        token,
+        auth,
         { method: "DELETE" }
       ),
     onSuccess: invalidate,
@@ -1743,7 +1742,7 @@ function VisibilityCard({
 }
 
 function AiPanel({
-  token,
+  auth,
   detail,
   title,
   sourceLanguage,
@@ -1753,7 +1752,7 @@ function AiPanel({
   isSaving,
   isPublishing,
 }: {
-  token: string
+  auth: AuthSdk
   detail: DocumentDetail
   title: string
   sourceLanguage: string
@@ -1768,7 +1767,7 @@ function AiPanel({
   const [run, setRun] = useState<AiRun>()
   const ai = useMutation({
     mutationFn: (task: AiRun["task"]) =>
-      request<AiRun>(`/api/v1/documents/${detail.document.id}/ai`, token, {
+      request<AiRun>(`/api/v1/documents/${detail.document.id}/ai`, auth, {
         method: "POST",
         body: JSON.stringify({ task }),
       }),
@@ -1782,7 +1781,7 @@ function AiPanel({
     mutationFn: () =>
       request<DocumentDetail>(
         `/api/v1/documents/${detail.document.id}`,
-        token,
+        auth,
         {
           method: "PUT",
           body: JSON.stringify({
@@ -1797,7 +1796,7 @@ function AiPanel({
     onSuccess: () => {
       toast.success(t("metadataSaved"))
       void queryClient.invalidateQueries({
-        queryKey: ["document", token, detail.document.id],
+        queryKey: ["document", detail.document.id],
       })
     },
     onError: showError,
@@ -1806,7 +1805,7 @@ function AiPanel({
     mutationFn: () =>
       request<DocumentDetail>(
         `/api/v1/documents/${detail.document.id}`,
-        token,
+        auth,
         {
           method: "PUT",
           body: JSON.stringify({
@@ -1820,10 +1819,10 @@ function AiPanel({
     onSuccess: () => {
       toast.success(t("polishSaved"))
       void queryClient.invalidateQueries({
-        queryKey: ["documents", token],
+        queryKey: ["documents"],
       })
       void queryClient.invalidateQueries({
-        queryKey: ["document", token, detail.document.id],
+        queryKey: ["document", detail.document.id],
       })
     },
     onError: showError,
@@ -2276,18 +2275,18 @@ function PublicDocumentPage() {
   const { documentId = "" } = useParams()
   const navigate = useNavigate()
   const { locale, t } = useI18n()
-  const { isReady, isAuthenticated, session } = useAuthMini()
+  const { isReady, isAuthenticated, sdk } = useAuthMini()
   const articleRef = useRef<HTMLElement>(null)
   const [commentAnchor, setCommentAnchor] = useState<{
     documentId: string
     anchor: CommentAnchor
   } | null>(null)
   const document = useQuery({
-    queryKey: ["public-document", documentId, locale, session?.accessToken],
+    queryKey: ["public-document", documentId, locale],
     queryFn: () =>
       request<PublicDocumentDetail>(
         `/api/public/documents/${documentId}?language=${encodeURIComponent(locale)}`,
-        session?.accessToken ?? undefined
+        sdk ?? undefined
       ),
     enabled: isReady && Boolean(documentId),
     refetchInterval: (query) =>
@@ -2303,9 +2302,9 @@ function PublicDocumentPage() {
       (isPrivateDocument ? t("privateDocumentTitle") : t("pageTitleEditor"))
   )
   const me = useQuery({
-    queryKey: ["me", session?.accessToken],
-    queryFn: () => request<Me>("/api/v1/me", session?.accessToken ?? undefined),
-    enabled: isReady && isAuthenticated && Boolean(session?.accessToken),
+    queryKey: ["me"],
+    queryFn: () => request<Me>("/api/v1/me", sdk ?? undefined),
+    enabled: isReady && isAuthenticated && Boolean(sdk),
   })
   const activeCommentAnchor =
     commentAnchor?.documentId === documentId ? commentAnchor.anchor : null
@@ -2442,8 +2441,8 @@ function PublicDocumentPage() {
         <DocumentComments
           documentId={document.data.id}
           language={document.data.language}
-          token={session?.accessToken ?? undefined}
-          canComment={isReady && isAuthenticated && Boolean(session?.accessToken)}
+          auth={sdk ?? undefined}
+          canComment={isReady && isAuthenticated && Boolean(sdk)}
           articleRef={articleRef}
           anchor={activeCommentAnchor}
           onClearAnchor={() => setCommentAnchor(null)}
@@ -2462,7 +2461,7 @@ type CommentAnchor = {
 function DocumentComments({
   documentId,
   language,
-  token,
+  auth,
   canComment,
   articleRef,
   anchor,
@@ -2470,7 +2469,7 @@ function DocumentComments({
 }: {
   documentId: string
   language: string
-  token?: string
+  auth?: AuthSdk
   canComment: boolean
   articleRef: { current: HTMLElement | null }
   anchor: CommentAnchor | null
@@ -2490,10 +2489,10 @@ function DocumentComments({
   })
   const post = useMutation({
     mutationFn: () => {
-      if (!token) throw new Error(t("signInToComment"))
+      if (!auth) throw new Error(t("signInToComment"))
       return request<DocumentComment>(
         `/api/v1/public-documents/${documentId}/comments`,
-        token,
+        auth,
         {
           method: "POST",
           body: JSON.stringify({
@@ -3201,7 +3200,7 @@ function PublicUserPage() {
     article: t("profileArticle"),
   }
   useBrowserTitle(`${activeTabTitles[activeTab]} — ${t("pageTitlePersonalPage")}`)
-  const { isReady, isAuthenticated, session } = useAuthMini()
+  const { isReady, isAuthenticated, sdk } = useAuthMini()
   const profile = useQuery({
     queryKey: ["public-user-profile", ownerId, locale],
     queryFn: () =>
@@ -3217,15 +3216,15 @@ function PublicUserPage() {
     },
   })
   const me = useQuery({
-    queryKey: ["me", session?.accessToken],
-    queryFn: () => request<Me>("/api/v1/me", session?.accessToken ?? undefined),
-    enabled: isReady && isAuthenticated && Boolean(session?.accessToken),
+    queryKey: ["me"],
+    queryFn: () => request<Me>("/api/v1/me", sdk ?? undefined),
+    enabled: isReady && isAuthenticated && Boolean(sdk),
   })
   const profileDocument = useMutation({
     mutationFn: () =>
       request<DocumentDetail>(
         "/api/v1/profile-document",
-        session?.accessToken ?? undefined,
+        sdk ?? undefined,
         {
           method: "POST",
         }
@@ -3237,7 +3236,7 @@ function PublicUserPage() {
     mutationFn: () =>
       request<ProfileSummaryTaskResponse>(
         `/api/v1/documents/${profile.data?.profile?.id ?? ""}/profile-summaries`,
-        session?.accessToken ?? undefined,
+        sdk ?? undefined,
         {
           method: "POST",
           body: JSON.stringify({ task: "all" }),
@@ -3613,10 +3612,10 @@ function publicationActivityClass(count: number): string {
   return "size-3 rounded-sm bg-primary"
 }
 
-function SetupPage({ token, onDone }: { token: string; onDone: () => void }) {
+function SetupPage({ auth, onDone }: { auth: AuthSdk; onDone: () => void }) {
   const { t } = useI18n()
   const setup = useMutation({
-    mutationFn: () => request<Me>("/api/v1/setup", token, { method: "POST" }),
+    mutationFn: () => request<Me>("/api/v1/setup", auth, { method: "POST" }),
     onSuccess: () => {
       toast.success(t("rootConfigured"))
       onDone()
@@ -3648,7 +3647,7 @@ function SetupPage({ token, onDone }: { token: string; onDone: () => void }) {
   )
 }
 
-function ApiKeysPage({ token }: { token: string }) {
+function ApiKeysPage({ auth }: { auth: AuthSdk }) {
   const { locale, t } = useI18n()
   const queryClient = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
@@ -3656,30 +3655,30 @@ function ApiKeysPage({ token }: { token: string }) {
   const [created, setCreated] = useState<CreatedApiKey | null>(null)
   const [revoking, setRevoking] = useState<ApiKey | null>(null)
   const keys = useQuery({
-    queryKey: ["api-keys", token],
-    queryFn: () => request<ApiKey[]>("/api/v1/api-keys", token),
+    queryKey: ["api-keys"],
+    queryFn: () => request<ApiKey[]>("/api/v1/api-keys", auth),
   })
   const create = useMutation({
     mutationFn: () =>
-      request<CreatedApiKey>("/api/v1/api-keys", token, {
+      request<CreatedApiKey>("/api/v1/api-keys", auth, {
         method: "POST",
         body: JSON.stringify({ label: label.trim() }),
       }),
     onSuccess: (key) => {
       setCreated(key)
       setLabel("")
-      void queryClient.invalidateQueries({ queryKey: ["api-keys", token] })
+      void queryClient.invalidateQueries({ queryKey: ["api-keys"] })
     },
     onError: showError,
   })
   const revoke = useMutation({
     mutationFn: (id: string) =>
-      request<void>(`/api/v1/api-keys/${encodeURIComponent(id)}`, token, {
+      request<void>(`/api/v1/api-keys/${encodeURIComponent(id)}`, auth, {
         method: "DELETE",
       }),
     onSuccess: () => {
       toast.success(t("apiKeyRevoked"))
-      void queryClient.invalidateQueries({ queryKey: ["api-keys", token] })
+      void queryClient.invalidateQueries({ queryKey: ["api-keys"] })
     },
     onError: showError,
   })
@@ -3892,12 +3891,12 @@ function ApiKeysPage({ token }: { token: string }) {
   )
 }
 
-function SystemResourcesPage({ token }: { token: string }) {
+function SystemResourcesPage({ auth }: { auth: AuthSdk }) {
   const { locale, t } = useI18n()
   const resources = useQuery({
-    queryKey: ["admin-system-resources", token],
+    queryKey: ["admin-system-resources"],
     queryFn: () =>
-      request<SystemResources>("/api/v1/admin/system-resources", token),
+      request<SystemResources>("/api/v1/admin/system-resources", auth),
     refetchInterval: 5_000,
   })
 
@@ -4039,18 +4038,18 @@ function SystemResourcesSkeleton() {
   )
 }
 
-function AdministrationPage({ token }: { token: string }) {
+function AdministrationPage({ auth }: { auth: AuthSdk }) {
   const { t } = useI18n()
   const aiConfiguration = useQuery({
-    queryKey: ["admin-ai", token],
-    queryFn: () => request<AiConfiguration>("/api/v1/admin/ai", token),
+    queryKey: ["admin-ai"],
+    queryFn: () => request<AiConfiguration>("/api/v1/admin/ai", auth),
   })
   const [baseUrl, setBaseUrl] = useState<string>()
   const [model, setModel] = useState<string>()
   const [apiKey, setApiKey] = useState("")
   const update = useMutation({
     mutationFn: () =>
-      request<AiConfiguration>("/api/v1/admin/ai", token, {
+      request<AiConfiguration>("/api/v1/admin/ai", auth, {
         method: "PUT",
         body: JSON.stringify({
           base_url: baseUrl ?? aiConfiguration.data?.base_url ?? "",
@@ -4063,7 +4062,7 @@ function AdministrationPage({ token }: { token: string }) {
   })
   const test = useMutation({
     mutationFn: () =>
-      request<{ request_id: string | null }>("/api/v1/admin/ai/test", token, {
+      request<{ request_id: string | null }>("/api/v1/admin/ai/test", auth, {
         method: "POST",
         body: JSON.stringify({
           base_url: baseUrl ?? aiConfiguration.data?.base_url ?? "",
@@ -4188,11 +4187,11 @@ function AdministrationPage({ token }: { token: string }) {
   )
 }
 
-function AiRequestAuditPage({ token }: { token: string }) {
+function AiRequestAuditPage({ auth }: { auth: AuthSdk }) {
   const { locale, t } = useI18n()
   const requests = useQuery({
-    queryKey: ["admin-ai-requests", token],
-    queryFn: () => request<AiRequest[]>("/api/v1/admin/ai/requests", token),
+    queryKey: ["admin-ai-requests"],
+    queryFn: () => request<AiRequest[]>("/api/v1/admin/ai/requests", auth),
   })
 
   if (requests.isPending) return <PageSkeleton />

@@ -25,7 +25,7 @@ import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { request } from "@/lib/api"
+import { request, type AuthSdk } from "@/lib/api"
 import { useI18n } from "@/lib/i18n"
 import type { Document, DocumentDetail } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -42,10 +42,10 @@ type Placement = { parentId: string | null; afterId: string | null }
 
 export function DocumentTree({
   documents,
-  token,
+  auth,
 }: {
   documents: Document[]
-  token: string
+  auth: AuthSdk
 }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -74,7 +74,7 @@ export function DocumentTree({
       parentId: string | null
       afterId: string | null
     }) =>
-      request<DocumentDetail>(`/api/v1/documents/${input.id}/move`, token, {
+      request<DocumentDetail>(`/api/v1/documents/${input.id}/move`, auth, {
         method: "POST",
         body: JSON.stringify({
           parent_id: input.parentId,
@@ -82,11 +82,11 @@ export function DocumentTree({
         }),
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      void queryClient.invalidateQueries({ queryKey: ["documents"] })
     },
     onError: (error) => {
       toast.error(error.message)
-      void queryClient.invalidateQueries({ queryKey: ["documents", token] })
+      void queryClient.invalidateQueries({ queryKey: ["documents"] })
     },
   })
 
