@@ -1,3 +1,7 @@
+import type { AuthMiniContextValue } from "auth-mini-react-components"
+
+export type AuthSdk = NonNullable<AuthMiniContextValue["sdk"]>
+
 export class ApiRequestError extends Error {
   readonly status: number
 
@@ -8,15 +12,32 @@ export class ApiRequestError extends Error {
   }
 }
 
+// RECOVERY: the Browser SDK rotates access tokens without re-rendering
+// consumers, so tokens are resolved when a request is sent. A stale snapshot
+// gets a single retry after a session refresh; a failed refresh falls back to
+// the original 401 response so callers surface the real authentication error.
+async function fetchWithAuthRetry(
+  sdk: AuthSdk | undefined,
+  send: (accessToken?: string) => Promise<Response>
+): Promise<Response> {
+  const response = await send(sdk?.session.getState().accessToken ?? undefined)
+  if (response.status !== 401 || !sdk) return response
+  const refreshed = await sdk.session.refresh().catch(() => null)
+  if (!refreshed?.accessToken) return response
+  return send(refreshed.accessToken)
+}
+
 export async function request<T>(
   path: string,
-  accessToken?: string,
+  sdk?: AuthSdk,
   init?: RequestInit
 ): Promise<T> {
-  const headers = new Headers(init?.headers)
-  headers.set("Content-Type", "application/json")
-  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`)
-  const response = await fetch(path, { ...init, headers })
+  const response = await fetchWithAuthRetry(sdk, (accessToken) => {
+    const headers = new Headers(init?.headers)
+    headers.set("Content-Type", "application/json")
+    if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`)
+    return fetch(path, { ...init, headers })
+  })
   if (response.status === 204) return undefined as T
   const body = (await response.json()) as T & { error?: string }
   if (!response.ok)
@@ -27,16 +48,14 @@ export async function request<T>(
 export async function upload<T>(
   path: string,
   content: Blob,
-  accessToken: string
+  sdk: AuthSdk
 ): Promise<T> {
-  const headers = new Headers({
-    "Content-Type": content.type || "application/octet-stream",
-    Authorization: `Bearer ${accessToken}`,
-  })
-  const response = await fetch(path, {
-    method: "POST",
-    headers,
-    body: content,
+  const response = await fetchWithAuthRetry(sdk, (accessToken) => {
+    const headers = new Headers({
+      "Content-Type": content.type || "application/octet-stream",
+    })
+    if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`)
+    return fetch(path, { method: "POST", headers, body: content })
   })
   const body = (await response.json().catch(() => ({}))) as T & {
     error?: string
