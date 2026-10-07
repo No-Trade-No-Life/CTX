@@ -998,7 +998,7 @@ fn require_document_owner(
 }
 
 fn is_reader_language(language: &str) -> bool {
-    matches!(language, "zh-CN" | "en-US" | "ja-JP" | "es-ES")
+    matches!(language, "zh-CN" | "en-US")
 }
 
 fn source_language_or_und(value: Option<&str>) -> Result<String, ApiError> {
@@ -1153,9 +1153,9 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::{
         AppState, Principal, PublicDocumentQuery, WebAssets, client_address, get_document,
-        hash_secret, image_content_type, is_media_id, public_document, public_media,
-        publication_visibility, request_principal, requested_language, source_language_or_und,
-        static_asset, store_media, validate_ai_base_url,
+        hash_secret, image_content_type, is_media_id, is_reader_language, public_document,
+        public_media, publication_visibility, request_principal, requested_language,
+        source_language_or_und, static_asset, store_media, validate_ai_base_url,
     };
     use crate::{
         db::{CreateDocumentOutcome, Database, DocumentViewStats, NewDocument},
@@ -1213,10 +1213,18 @@ mod tests {
     #[test]
     fn normalizes_requested_reader_languages() {
         assert_eq!(
-            requested_language(Some("es-es")).unwrap().as_deref(),
-            Some("es-ES")
+            requested_language(Some("zh-cn")).unwrap().as_deref(),
+            Some("zh-CN")
         );
-        assert!(requested_language(Some("Spanish")).is_err());
+        assert!(requested_language(Some("Chinese")).is_err());
+    }
+
+    #[test]
+    fn queues_translations_only_for_supported_reader_languages() {
+        assert!(is_reader_language("zh-CN"));
+        assert!(is_reader_language("en-US"));
+        assert!(!is_reader_language("ja-JP"));
+        assert!(!is_reader_language("es-ES"));
     }
 
     #[test]

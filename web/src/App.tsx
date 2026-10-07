@@ -136,14 +136,6 @@ import { CtxMark } from "@/components/ctx-mark"
 import { DocumentTree } from "@/components/document-tree"
 import { MarkdownEditor } from "@/components/markdown-editor"
 import { Separator } from "@/components/ui/separator"
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Toaster } from "@/components/ui/sonner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -172,33 +164,6 @@ export function PublicApp() {
       <PublicShell />
       <Toaster />
     </>
-  )
-}
-
-function LanguageSelect() {
-  const { locale, setLocale, t } = useI18n()
-  return (
-    <Select
-      value={locale}
-      onValueChange={(value) => setLocale(value as Locale)}
-    >
-      <SelectTrigger
-        size="sm"
-        aria-label={t("language")}
-        className="size-8 justify-center border-transparent p-0 shadow-none hover:bg-accent [&>svg:last-child]:hidden"
-      >
-        <LanguagesIcon />
-        <SelectValue className="sr-only" />
-      </SelectTrigger>
-      <SelectContent align="end">
-        <SelectGroup>
-          <SelectItem value="en-US">{t("languageEnglish")}</SelectItem>
-          <SelectItem value="zh-CN">{t("languageChinese")}</SelectItem>
-          <SelectItem value="ja-JP">{t("languageJapanese")}</SelectItem>
-          <SelectItem value="es-ES">{t("languageSpanish")}</SelectItem>
-        </SelectGroup>
-      </SelectContent>
-    </Select>
   )
 }
 
@@ -350,12 +315,7 @@ function PublicShell() {
         title={t("appName")}
         nav={nav}
         pageTitle={title}
-        headerSlot={
-          <>
-            <RefreshButton />
-            <LanguageSelect />
-          </>
-        }
+        headerSlot={<RefreshButton />}
       >
         <Routes>
           <Route path="/" element={<Navigate to="/square" replace />} />
@@ -414,12 +374,7 @@ function CtxShell({ auth }: { auth: AuthSdk }) {
         title={t("appName")}
         nav={nav}
         pageTitle={title}
-        headerSlot={
-          <>
-            <RefreshButton />
-            <LanguageSelect />
-          </>
-        }
+        headerSlot={<RefreshButton />}
       >
         <Routes>
           <Route path="/documents" element={<DocumentListPage auth={auth} />} />

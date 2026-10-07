@@ -85,12 +85,14 @@ public square for anyone to read.
   `Authorization: Bearer ctx_<user_id>_<secret>`, accepted by the same
   authenticated API as browser sessions, and revocable at any time.
 - Publishing saves the original Markdown immediately, then queues auditable AI
-  metadata extraction against that fixed revision. When a reader opens an
-  unavailable UI language (`zh-CN`, `en-US`, `ja-JP`, or `es-ES`), CTX queues
-  one Markdown-preserving translation together with localized editorial
-  metadata. Translations retain Markdown structure, including links, code,
-  GFM, and Mermaid; the reader shows the original with a background-work
-  notice until that localized article is ready.
+  metadata extraction against that fixed revision. The Linkit profile owns the
+  reader's language: CTX follows the Chinese or English choice stored there,
+  and the automatic setting follows the browser. When a reader opens an
+  unavailable UI language (`zh-CN` or `en-US`), CTX queues one
+  Markdown-preserving translation together with localized editorial metadata.
+  Translations retain Markdown structure, including links, code, GFM, and
+  Mermaid; the reader shows the original with a background-work notice until
+  that localized article is ready.
 - Root administrators can inspect queued, running, successful, and failed
   metadata/translation requests at **Administration → AI request audit**. Each
   completed upstream interaction records its `x-openai-lb-request-id`, so a

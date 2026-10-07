@@ -8,15 +8,18 @@ import { HashRouter, useLocation } from "react-router-dom"
 import "./index.css"
 import App, { PublicApp } from "./App.tsx"
 import { applyFavicon } from "@/lib/favicon"
-import { I18nProvider, useI18n } from "@/lib/i18n.tsx"
+import { I18nProvider, localeFor } from "@/lib/i18n.tsx"
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, staleTime: 5_000 } },
 })
 
+// The Linkit profile owns the language preference. Until one is stored, or
+// while the viewer is signed out, Linkit falls back to the browser language.
+const fallbackLanguage = localeFor(window.navigator.language)
+
 function RouteBoundary() {
   const location = useLocation()
-  const { locale } = useI18n()
 
   if (
     location.pathname === "/" ||
@@ -30,9 +33,14 @@ function RouteBoundary() {
         audiences={["ctx.ntnl.io", "linkit.ntnl.io"]}
         autoRedirectToLogin={false}
       >
-        <LinkitProvider lang={locale} linkitBaseUrl="https://linkit.ntnl.io">
-          <FaviconSync />
-          <PublicApp />
+        <LinkitProvider
+          lang={fallbackLanguage}
+          linkitBaseUrl="https://linkit.ntnl.io"
+        >
+          <I18nProvider>
+            <FaviconSync />
+            <PublicApp />
+          </I18nProvider>
         </LinkitProvider>
       </AuthMiniProvider>
     )
@@ -43,9 +51,14 @@ function RouteBoundary() {
       audiences={["ctx.ntnl.io", "linkit.ntnl.io"]}
       autoRedirectToLogin
     >
-      <LinkitProvider lang={locale} linkitBaseUrl="https://linkit.ntnl.io">
-        <FaviconSync />
-        <App />
+      <LinkitProvider
+        lang={fallbackLanguage}
+        linkitBaseUrl="https://linkit.ntnl.io"
+      >
+        <I18nProvider>
+          <FaviconSync />
+          <App />
+        </I18nProvider>
       </LinkitProvider>
     </AuthMiniProvider>
   )
@@ -63,11 +76,9 @@ function FaviconSync() {
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <I18nProvider>
-        <HashRouter>
-          <RouteBoundary />
-        </HashRouter>
-      </I18nProvider>
+      <HashRouter>
+        <RouteBoundary />
+      </HashRouter>
     </QueryClientProvider>
   </StrictMode>
 )
