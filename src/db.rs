@@ -108,6 +108,21 @@ const CURRENT_TABLES_SQL: &str = "
         last_used_at INTEGER,
         revoked_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS document_view_stats (
+        document_id TEXT PRIMARY KEY NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        views_total INTEGER NOT NULL DEFAULT 0,
+        views_human INTEGER NOT NULL DEFAULT 0,
+        views_unique_human INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS document_view_daily (
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        day TEXT NOT NULL,
+        views_total INTEGER NOT NULL DEFAULT 0,
+        views_human INTEGER NOT NULL DEFAULT 0,
+        views_unique_human INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (document_id, day)
+    );
 ";
 
 const CURRENT_INDEXES_SQL: &str = "
@@ -222,6 +237,23 @@ pub struct PublicDocumentDetail {
     pub translation_status: Option<String>,
     pub is_translation_fallback: bool,
     pub published_at: i64,
+    pub views: DocumentViewStats,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+pub struct DocumentViewStats {
+    pub total: u64,
+    pub human: u64,
+    pub unique_human: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewDelta {
+    pub day: String,
+    pub document_id: String,
+    pub total: u64,
+    pub human: u64,
+    pub unique_human: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1260,6 +1292,50 @@ impl Database {
         )))
     }
 
+    /// Flushes one batch of in-memory view deltas into `SQLite`.
+    ///
+    /// Deltas for documents that no longer exist are skipped instead of
+    /// failing the whole batch. Deltas are additive, so a batch retried after
+    /// an ambiguous failure can at worst double-count one flush window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transaction cannot be committed.
+    pub fn apply_view_deltas(&self, deltas: &[ViewDelta]) -> Result<(), DatabaseError> {
+        if deltas.is_empty() {
+            return Ok(());
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated_at = now();
+        for delta in deltas {
+            let total = sqlite_count(delta.total);
+            let human = sqlite_count(delta.human);
+            let unique_human = sqlite_count(delta.unique_human);
+            transaction.execute(
+                "INSERT INTO document_view_stats(document_id, views_total, views_human, views_unique_human, updated_at) SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM documents WHERE id = ?1) ON CONFLICT(document_id) DO UPDATE SET views_total = views_total + excluded.views_total, views_human = views_human + excluded.views_human, views_unique_human = views_unique_human + excluded.views_unique_human, updated_at = excluded.updated_at",
+                params![delta.document_id, total, human, unique_human, updated_at],
+            )?;
+            transaction.execute(
+                "INSERT INTO document_view_daily(document_id, day, views_total, views_human, views_unique_human) SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM documents WHERE id = ?1) ON CONFLICT(document_id, day) DO UPDATE SET views_total = views_total + excluded.views_total, views_human = views_human + excluded.views_human, views_unique_human = views_unique_human + excluded.views_unique_human",
+                params![delta.document_id, delta.day, total, human, unique_human],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Returns the materialized view counters for one document, or zeroes
+    /// when the document has never been read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing query fails.
+    pub fn view_stats(&self, document_id: &str) -> Result<DocumentViewStats, DatabaseError> {
+        let connection = self.connection()?;
+        view_stats(&connection, document_id)
+    }
+
     pub fn document_readers(
         &self,
         document_id: &str,
@@ -1895,6 +1971,7 @@ fn public_document_detail(
         translation_status,
         is_translation_fallback: translation_fallback,
         published_at: publication.published_at,
+        views: view_stats(connection, &publication.id)?,
     })
 }
 
@@ -1911,6 +1988,33 @@ fn profile_summary_status(
         )
         .optional()?;
     Ok(status.filter(|status| status != "succeeded"))
+}
+
+fn view_stats(
+    connection: &Connection,
+    document_id: &str,
+) -> Result<DocumentViewStats, DatabaseError> {
+    let stats = connection
+        .query_row(
+            "SELECT views_total, views_human, views_unique_human FROM document_view_stats WHERE document_id = ?1",
+            [document_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((total, human, unique_human)) = stats else {
+        return Ok(DocumentViewStats::default());
+    };
+    Ok(DocumentViewStats {
+        total: u64::try_from(total).unwrap_or(0),
+        human: u64::try_from(human).unwrap_or(0),
+        unique_human: u64::try_from(unique_human).unwrap_or(0),
+    })
 }
 
 fn public_document_summary(
@@ -2614,6 +2718,10 @@ fn ai_request_from_row(row: &Row<'_>) -> rusqlite::Result<AiRequest> {
     })
 }
 
+fn sqlite_count(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 fn now() -> i64 {
     Utc::now().timestamp()
 }
@@ -2680,7 +2788,7 @@ mod tests {
     use super::{
         CreateDocumentOutcome, Database, Document, DocumentDetail, DocumentMove, DocumentSave,
         MoveDocumentOutcome, NewDocument, NewDocumentComment, PROFILE_SUMMARY_TASKS,
-        PublicDocumentDetail, PublishedMetadata, ReadDocumentOutcome, table_has_column,
+        PublicDocumentDetail, PublishedMetadata, ReadDocumentOutcome, ViewDelta, table_has_column,
     };
 
     fn read_public_document(
@@ -2747,6 +2855,73 @@ mod tests {
             .into_iter()
             .map(|document| document.title)
             .collect()
+    }
+
+    #[test]
+    fn view_counts_accumulate_in_batches_and_follow_document_deletion() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let article = create_article(&database, "Counted article", None);
+        database
+            .publish_document(&article.document.id, &article.revision.id, "public")
+            .unwrap();
+
+        database
+            .apply_view_deltas(&[ViewDelta {
+                day: "2026-02-14".to_owned(),
+                document_id: article.document.id.clone(),
+                total: 3,
+                human: 2,
+                unique_human: 1,
+            }])
+            .unwrap();
+        database
+            .apply_view_deltas(&[ViewDelta {
+                day: "2026-02-14".to_owned(),
+                document_id: article.document.id.clone(),
+                total: 2,
+                human: 2,
+                unique_human: 1,
+            }])
+            .unwrap();
+
+        let stats = database.view_stats(&article.document.id).unwrap();
+        assert_eq!(stats.total, 5);
+        assert_eq!(stats.human, 4);
+        assert_eq!(stats.unique_human, 2);
+        assert_eq!(
+            read_public_document(&database, &article.document.id, None)
+                .unwrap()
+                .views
+                .total,
+            5
+        );
+        let daily: i64 = database
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT views_total FROM document_view_daily WHERE document_id = ?1 AND day = ?2",
+                params![article.document.id, "2026-02-14"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(daily, 5);
+
+        // Deltas for documents that no longer exist are skipped, not errors.
+        database
+            .apply_view_deltas(&[ViewDelta {
+                day: "2026-02-14".to_owned(),
+                document_id: "missing-document".to_owned(),
+                total: 1,
+                human: 1,
+                unique_human: 1,
+            }])
+            .unwrap();
+
+        assert!(database.delete_document(&article.document.id).unwrap());
+        let stats = database.view_stats(&article.document.id).unwrap();
+        assert_eq!(stats.total, 0);
+        assert_eq!(stats.unique_human, 0);
     }
 
     #[test]

@@ -33,6 +33,7 @@ use crate::{
     },
     language::normalize_language_tag,
     resources::{ResourceError, ResourceMonitor, SystemResourcesSnapshot},
+    views::{ViewCounter, ViewEvent},
 };
 
 #[derive(Clone)]
@@ -40,6 +41,7 @@ struct AppState {
     database: Database,
     media_directory: Arc<PathBuf>,
     resources: Arc<Mutex<ResourceMonitor>>,
+    views: Arc<ViewCounter>,
     auth_verifier: AuthMiniVerifier,
 }
 
@@ -101,12 +103,13 @@ const PUBLIC_MEDIA_BASE_URL: &str = "https://ctx.ntnl.io/media";
 #[folder = "web/dist/"]
 struct WebAssets;
 
-pub fn router(database: Database, auth: &AuthMiniLayer) -> Router {
+pub fn router(database: Database, views: Arc<ViewCounter>, auth: &AuthMiniLayer) -> Router {
     let media_directory = Arc::new(database.media_directory());
     let state = AppState {
         resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
         database,
         media_directory,
+        views,
         auth_verifier: auth.verifier(),
     };
     let private = Router::new()
@@ -655,6 +658,14 @@ async fn public_document(
             }
             ReadDocumentOutcome::Missing => return Err(ApiError::not_found()),
         };
+    if viewer.as_deref() != Some(document.owner_id.as_str()) {
+        state.views.record(ViewEvent {
+            document_id: document_id.as_str(),
+            client: client_address(&headers),
+            user_agent: user_agent(&headers),
+        });
+    }
+    state.views.merge_pending(&document_id, &mut document.views);
     if document.is_translation_fallback && language.as_deref().is_some_and(is_reader_language) {
         document.translation_status = state
             .database
@@ -677,6 +688,33 @@ async fn optional_viewer(state: &AppState, headers: &HeaderMap) -> Option<String
         .await
         .ok()
         .map(|principal| principal.subject)
+}
+
+/// Best-effort client hint used only to deduplicate unique readers; the value
+/// is hashed before it is remembered and never stored verbatim.
+fn client_address(headers: &HeaderMap) -> Option<&str> {
+    const FORWARDED_CLIENT_HEADERS: [&str; 3] =
+        ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"];
+    for name in FORWARDED_CLIENT_HEADERS {
+        let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) else {
+            continue;
+        };
+        let Some(client) = value
+            .split(',')
+            .map(str::trim)
+            .find(|client| !client.is_empty())
+        else {
+            continue;
+        };
+        return Some(client);
+    }
+    None
+}
+
+fn user_agent(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
 }
 
 async fn public_comments(
@@ -1103,14 +1141,19 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, WebAssets, hash_secret, image_content_type, is_media_id, public_media,
-        publication_visibility, request_principal, requested_language, source_language_or_und,
-        static_asset, store_media, validate_ai_base_url,
+        AppState, PublicDocumentQuery, WebAssets, client_address, hash_secret, image_content_type,
+        is_media_id, public_document, public_media, publication_visibility, request_principal,
+        requested_language, source_language_or_und, static_asset, store_media,
+        validate_ai_base_url,
     };
-    use crate::{db::Database, resources::ResourceMonitor};
+    use crate::{
+        db::{CreateDocumentOutcome, Database, NewDocument},
+        resources::ResourceMonitor,
+        views::ViewCounter,
+    };
     use axum::{
-        extract::{Path, State},
-        http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
+        extract::{Path, Query, State},
+        http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header},
     };
     use std::sync::{Arc, Mutex};
 
@@ -1220,6 +1263,7 @@ mod tests {
                 resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
                 database,
                 media_directory,
+                views: Arc::new(ViewCounter::new()),
                 auth_verifier: test_auth_verifier(),
             }),
             Path(media_id),
@@ -1239,6 +1283,7 @@ mod tests {
             media_directory: Arc::new(database.media_directory()),
             resources: Arc::new(Mutex::new(ResourceMonitor::new(database.clone()))),
             database,
+            views: Arc::new(ViewCounter::new()),
             auth_verifier: test_auth_verifier(),
         }
     }
@@ -1278,5 +1323,99 @@ mod tests {
                 .unwrap()
         );
         assert!(request_principal(&state, &headers).await.is_err());
+    }
+
+    #[test]
+    fn prefers_cloudflare_client_headers_for_unique_reader_dedup() {
+        let headers = HeaderMap::from_iter([
+            (
+                HeaderName::from_static("x-forwarded-for"),
+                HeaderValue::from_static("198.51.100.9, 10.0.0.1"),
+            ),
+            (
+                HeaderName::from_static("cf-connecting-ip"),
+                HeaderValue::from_static("203.0.113.7"),
+            ),
+        ]);
+        assert_eq!(client_address(&headers), Some("203.0.113.7"));
+
+        let headers = HeaderMap::from_iter([(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static("198.51.100.9, 10.0.0.1"),
+        )]);
+        assert_eq!(client_address(&headers), Some("198.51.100.9"));
+        assert_eq!(client_address(&HeaderMap::new()), None);
+    }
+
+    #[tokio::test]
+    async fn public_document_reads_are_counted_in_memory_and_served_with_the_pending_total() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let CreateDocumentOutcome::Created(article) = database
+            .create_document(&NewDocument {
+                author_id: "author-a",
+                title: "Counted article",
+                source_language: "en-US",
+                content: "# Counted",
+                message: "Created document",
+                parent_id: None,
+            })
+            .unwrap()
+        else {
+            panic!("expected the document to be created");
+        };
+        database
+            .publish_document(&article.document.id, &article.revision.id, "public")
+            .unwrap();
+        let state = test_state(database);
+        let reader_headers = HeaderMap::from_iter([
+            (
+                header::USER_AGENT,
+                HeaderValue::from_static("Mozilla/5.0 (X11; Linux x86_64)"),
+            ),
+            (
+                HeaderName::from_static("cf-connecting-ip"),
+                HeaderValue::from_static("203.0.113.7"),
+            ),
+        ]);
+
+        let first = public_document(
+            State(state.clone()),
+            Path(article.document.id.clone()),
+            Query(PublicDocumentQuery { language: None }),
+            reader_headers.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.0.views.total, 1);
+        assert_eq!(first.0.views.human, 1);
+        assert_eq!(first.0.views.unique_human, 1);
+
+        // The same reader again counts as a read but not as a new unique one.
+        let second = public_document(
+            State(state.clone()),
+            Path(article.document.id.clone()),
+            Query(PublicDocumentQuery { language: None }),
+            reader_headers,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.0.views.total, 2);
+        assert_eq!(second.0.views.unique_human, 1);
+
+        // Machine agents count as reads but not as human or unique readers.
+        let agent_headers =
+            HeaderMap::from_iter([(header::USER_AGENT, HeaderValue::from_static("GPTBot/1.0"))]);
+        let third = public_document(
+            State(state),
+            Path(article.document.id),
+            Query(PublicDocumentQuery { language: None }),
+            agent_headers,
+        )
+        .await
+        .unwrap();
+        assert_eq!(third.0.views.total, 3);
+        assert_eq!(third.0.views.human, 2);
+        assert_eq!(third.0.views.unique_human, 1);
     }
 }

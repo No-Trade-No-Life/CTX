@@ -24,6 +24,7 @@ import {
   CpuIcon,
   DatabaseIcon,
   ExternalLinkIcon,
+  EyeIcon,
   FileTextIcon,
   Globe2Icon,
   HardDriveIcon,
@@ -2376,6 +2377,13 @@ function PublicDocumentPage() {
             <UserRoundIcon data-icon="inline-start" />
             {t("viewAuthorPage")}
           </Button>
+          <Badge variant="outline">
+            <EyeIcon data-icon="inline-start" />
+            {t("viewCount").replace(
+              "{count}",
+              document.data.views.total.toLocaleString(locale)
+            )}
+          </Badge>
           <Badge variant="outline">{document.data.language}</Badge>
           {document.data.visibility === "private" ? (
             <Badge variant="outline">
