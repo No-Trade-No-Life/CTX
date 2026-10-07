@@ -1491,17 +1491,8 @@ fn metadata_input(document: &DocumentDetail, published_articles: &[PublishedArti
 
 fn translation_instructions(source_language: &str, target_language: &str) -> String {
     format!(
-        "You are CTX's Markdown translation assistant. Translate the title, complete GitHub Flavored Markdown document, and editorial metadata from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, task lists, tables, HTML, and frontmatter. For Mermaid fenced code blocks, preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators; translate only reader-facing labels, titles, and subgraph labels. Do not leave Mermaid labels in the source language. Do not change non-text elements or code. Translate description, summary, short_summary, tags, key_points, audience, experience_summary, personality_analysis, unconscious_motivations, philosophical_references, the explanations and article titles inside mbti_analysis and schwartz_values, and the summaries and evidence inside daily_timeline. Preserve all type codes, MBTI axes, value keys, scores, ranks, ISO dates, and `#/p/...` evidence links exactly. Preserve inferred_date and set metadata.inferred_lang to {target_language}. Keep the non-clinical and tentative limitations in each profile summary. Use fluent, idiomatic language for a reader familiar with the subject. {} Return only a JSON object with string fields title and content and an object field metadata.",
-        japanese_translation_rules(target_language)
+        "You are CTX's Markdown translation assistant. Translate the title, complete GitHub Flavored Markdown document, and editorial metadata from {source_language} into {target_language}. Preserve every Markdown structure and all factual meaning: headings, links and their URLs, code blocks, inline code, formulas, images, task lists, tables, HTML, and frontmatter. For Mermaid fenced code blocks, preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators; translate only reader-facing labels, titles, and subgraph labels. Do not leave Mermaid labels in the source language. Do not change non-text elements or code. Translate description, summary, short_summary, tags, key_points, audience, experience_summary, personality_analysis, unconscious_motivations, philosophical_references, the explanations and article titles inside mbti_analysis and schwartz_values, and the summaries and evidence inside daily_timeline. Preserve all type codes, MBTI axes, value keys, scores, ranks, ISO dates, and `#/p/...` evidence links exactly. Preserve inferred_date and set metadata.inferred_lang to {target_language}. Keep the non-clinical and tentative limitations in each profile summary. Use fluent, idiomatic language for a reader familiar with the subject. Return only a JSON object with string fields title and content and an object field metadata."
     )
-}
-
-fn japanese_translation_rules(target_language: &str) -> &'static str {
-    if target_language == "ja-JP" {
-        "For Japanese, use natural native phrasing in a polite, formal です・ます style appropriate for technical or professional documentation. Use Japanese-standard Jōyō kanji forms, never traditional Chinese glyph variants."
-    } else {
-        ""
-    }
 }
 
 async fn request_output(
@@ -1928,7 +1919,7 @@ mod tests {
 
     #[test]
     fn keeps_mermaid_syntax_and_translates_reader_facing_labels() {
-        let instructions = translation_instructions("en-US", "ja-JP");
+        let instructions = translation_instructions("zh-CN", "en-US");
         assert!(instructions.contains("preserve valid Mermaid syntax, identifiers, directives, relationships, and edge operators"));
         assert!(
             instructions
@@ -1937,7 +1928,6 @@ mod tests {
         assert!(instructions.contains("Do not leave Mermaid labels in the source language"));
         assert!(instructions.contains("experience_summary"));
         assert!(instructions.contains("personality_analysis"));
-        assert!(instructions.contains("です・ます"));
     }
 
     #[test]
