@@ -10,11 +10,8 @@ import {
 } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { AuthMiniButton, useAuthMini } from "auth-mini-react-components"
-import {
-  LinkitMyInfo,
-  LinkitUserInfo,
-  LinkitUserPicker,
-} from "linkit-react-components"
+import { LinkitUserInfo, LinkitUserPicker } from "linkit-react-components"
+import { AppLayout, type AppNavGroup, type AppNavItem } from "@zccz14/ux"
 import {
   ArrowLeftIcon,
   BookOpenIcon,
@@ -140,19 +137,6 @@ import { DocumentTree } from "@/components/document-tree"
 import { MarkdownEditor } from "@/components/markdown-editor"
 import { Separator } from "@/components/ui/separator"
 import {
-  Sidebar,
-  SidebarContent,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarHeader,
-  SidebarInset,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar"
-import {
   Select,
   SelectContent,
   SelectGroup,
@@ -218,6 +202,28 @@ function LanguageSelect() {
   )
 }
 
+function RefreshButton() {
+  const queryClient = useQueryClient()
+  const { t } = useI18n()
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t("refreshDocuments")}
+            onClick={() => void queryClient.invalidateQueries()}
+          />
+        }
+      >
+        <RefreshCwIcon />
+      </TooltipTrigger>
+      <TooltipContent>{t("refreshDocuments")}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 function useImageUpload(auth: AuthSdk) {
   return useCallback(
     async (image: File) =>
@@ -232,10 +238,69 @@ function PrivateApp() {
   return <CtxShell auth={sdk} />
 }
 
+type NavigationCopy = (
+  key:
+    | "navigationGroupBrowse"
+    | "navigationGroupSettings"
+    | "navigationGroupAdministration"
+    | "navigationDocuments"
+    | "navigationSquare"
+    | "navigationPersonalPage"
+    | "navigationApiKeys"
+    | "navigationAdministration"
+    | "navigationAiRequests"
+    | "navigationSystemResources"
+) => string
+
+function contentNavItems(
+  t: NavigationCopy,
+  options: { documents: boolean; personalPage?: string }
+): AppNavItem[] {
+  return [
+    ...(options.documents
+      ? [
+          {
+            to: "/documents",
+            label: t("navigationDocuments"),
+            icon: <FileTextIcon />,
+          },
+        ]
+      : []),
+    { to: "/square", label: t("navigationSquare"), icon: <Globe2Icon /> },
+    ...(options.personalPage
+      ? [
+          {
+            to: options.personalPage,
+            label: t("navigationPersonalPage"),
+            icon: <UserRoundIcon />,
+          },
+        ]
+      : []),
+  ]
+}
+
+function administrationNavItems(t: NavigationCopy): AppNavItem[] {
+  return [
+    {
+      to: "/admin",
+      label: t("navigationAdministration"),
+      icon: <Settings2Icon />,
+    },
+    {
+      to: "/admin/ai-requests",
+      label: t("navigationAiRequests"),
+      icon: <SparklesIcon />,
+    },
+    {
+      to: "/admin/system-resources",
+      label: t("navigationSystemResources"),
+      icon: <HardDriveIcon />,
+    },
+  ]
+}
+
 function PublicShell() {
-  const queryClient = useQueryClient()
   const location = useLocation()
-  const navigate = useNavigate()
   const { isReady, isAuthenticated, sdk } = useAuthMini()
   const { t } = useI18n()
   const title = publicPageTitle(location.pathname, t)
@@ -250,140 +315,56 @@ function PublicShell() {
     enabled: isReady && isAuthenticated && Boolean(sdk),
   })
   const signedIn = Boolean(me.data && !me.data.setup_required)
+  const nav: AppNavGroup[] = [
+    {
+      label: t("navigationGroupBrowse"),
+      items: contentNavItems(t, {
+        documents: signedIn,
+        personalPage: signedIn && me.data ? `/u/${me.data.user_id}` : undefined,
+      }),
+    },
+    {
+      label: t("navigationGroupSettings"),
+      items: [
+        {
+          to: "/settings/api-keys",
+          label: t("navigationApiKeys"),
+          icon: <KeyRoundIcon />,
+        },
+      ],
+    },
+    ...(me.data?.is_root
+      ? [
+          {
+            label: t("navigationGroupAdministration"),
+            items: administrationNavItems(t),
+          },
+        ]
+      : []),
+  ]
 
   return (
     <TooltipProvider>
-      <SidebarProvider>
-        <Sidebar collapsible="icon">
-          <SidebarHeader>
-            <Button
-              variant="ghost"
-              aria-label={t("appName")}
-              className="h-12 w-full justify-start gap-2 px-1.5 group-data-[collapsible=icon]:px-0"
-              onClick={() => navigate("/square")}
-            >
-              <CtxMark className="size-8 shrink-0 group-data-[collapsible=icon]:size-7" />
-              <span className="font-semibold group-data-[collapsible=icon]:hidden">
-                {t("appName")}
-              </span>
-            </Button>
-          </SidebarHeader>
-          <SidebarContent>
-            <SidebarGroup>
-              <SidebarGroupContent>
-                <SidebarMenu>
-                  {signedIn ? (
-                    <NavItem
-                      active={false}
-                      icon={FileTextIcon}
-                      onClick={() => navigate("/documents")}
-                    >
-                      {t("navigationDocuments")}
-                    </NavItem>
-                  ) : null}
-                  <NavItem
-                    active={location.pathname === "/square"}
-                    icon={Globe2Icon}
-                    onClick={() => navigate("/square")}
-                  >
-                    {t("navigationSquare")}
-                  </NavItem>
-                  {signedIn && me.data ? (
-                    <NavItem
-                      active={location.pathname === `/u/${me.data.user_id}`}
-                      icon={UserRoundIcon}
-                      onClick={() => navigate(`/u/${me.data.user_id}`)}
-                    >
-                      {t("navigationPersonalPage")}
-                    </NavItem>
-                  ) : null}
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-            <SidebarGroup>
-              <SidebarGroupContent>
-                <SidebarMenu>
-                  <NavItem
-                    active={location.pathname === "/settings/api-keys"}
-                    icon={KeyRoundIcon}
-                    onClick={() => navigate("/settings/api-keys")}
-                  >
-                    {t("navigationApiKeys")}
-                  </NavItem>
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-            {me.data?.is_root ? (
-              <SidebarGroup>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    <NavItem
-                      active={false}
-                      icon={Settings2Icon}
-                      onClick={() => navigate("/admin")}
-                    >
-                      {t("navigationAdministration")}
-                    </NavItem>
-                    <NavItem
-                      active={false}
-                      icon={SparklesIcon}
-                      onClick={() => navigate("/admin/ai-requests")}
-                    >
-                      {t("navigationAiRequests")}
-                    </NavItem>
-                    <NavItem
-                      active={false}
-                      icon={HardDriveIcon}
-                      onClick={() => navigate("/admin/system-resources")}
-                    >
-                      {t("navigationSystemResources")}
-                    </NavItem>
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            ) : null}
-          </SidebarContent>
-        </Sidebar>
-        <SidebarInset>
-          <header className="sticky top-0 z-10 flex h-14 items-center gap-3 border-b bg-background px-4">
-            <SidebarTrigger />
-            <Separator orientation="vertical" className="h-5" />
-            <p className="min-w-0 flex-1 truncate text-sm font-medium">
-              {publicPageTitle(location.pathname, t)}
-            </p>
-            {me.data?.is_root ? (
-              <Badge variant="outline" className="hidden sm:inline-flex">
-                <ShieldCheckIcon data-icon="inline-start" />
-                {t("root")}
-              </Badge>
-            ) : null}
+      <AppLayout
+        logo={{ light: <CtxMark />, dark: <CtxMark /> }}
+        title={t("appName")}
+        nav={nav}
+        pageTitle={title}
+        headerSlot={
+          <>
+            <RefreshButton />
             <LanguageSelect />
-            <LinkitMyInfo />
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={t("refreshDocuments")}
-                    onClick={() => void queryClient.invalidateQueries()}
-                  />
-                }
-              >
-                <RefreshCwIcon />
-              </TooltipTrigger>
-              <TooltipContent>{t("refreshDocuments")}</TooltipContent>
-            </Tooltip>
-          </header>
-          <Routes>
-            <Route path="/" element={<Navigate to="/square" replace />} />
-            <Route path="/square" element={<SquarePage />} />
-            <Route path="/p/:documentId" element={<PublicDocumentPage />} />
-            <Route path="/u/:ownerId" element={<PublicUserPage />} />
-            <Route path="*" element={<Navigate to="/square" replace />} />
-          </Routes>
-        </SidebarInset>
-      </SidebarProvider>
+          </>
+        }
+      >
+        <Routes>
+          <Route path="/" element={<Navigate to="/square" replace />} />
+          <Route path="/square" element={<SquarePage />} />
+          <Route path="/p/:documentId" element={<PublicDocumentPage />} />
+          <Route path="/u/:ownerId" element={<PublicUserPage />} />
+          <Route path="*" element={<Navigate to="/square" replace />} />
+        </Routes>
+      </AppLayout>
     </TooltipProvider>
   )
 }
@@ -391,7 +372,6 @@ function PublicShell() {
 function CtxShell({ auth }: { auth: AuthSdk }) {
   const queryClient = useQueryClient()
   const location = useLocation()
-  const navigate = useNavigate()
   const { t } = useI18n()
   const title = pageTitle(location.pathname, t)
   useBrowserTitle(
@@ -409,164 +389,85 @@ function CtxShell({ auth }: { auth: AuthSdk }) {
   if (me.data.setup_required)
     return <SetupPage auth={auth} onDone={refresh} />
 
+  const nav: AppNavGroup[] = [
+    {
+      label: t("navigationGroupBrowse"),
+      items: contentNavItems(t, {
+        documents: true,
+        personalPage: `/u/${me.data.user_id}`,
+      }),
+    },
+    ...(me.data.is_root
+      ? [
+          {
+            label: t("navigationGroupAdministration"),
+            items: administrationNavItems(t),
+          },
+        ]
+      : []),
+  ]
+
   return (
     <TooltipProvider>
-      <SidebarProvider>
-        <Sidebar collapsible="icon">
-          <SidebarHeader>
-            <Button
-              variant="ghost"
-              aria-label={t("appName")}
-              className="h-12 w-full justify-start gap-2 px-1.5 group-data-[collapsible=icon]:px-0"
-              onClick={() => navigate("/documents")}
-            >
-              <CtxMark className="size-8 shrink-0 group-data-[collapsible=icon]:size-7" />
-              <span className="font-semibold group-data-[collapsible=icon]:hidden">
-                {t("appName")}
-              </span>
-            </Button>
-          </SidebarHeader>
-          <SidebarContent>
-            <SidebarGroup>
-              <SidebarGroupContent>
-                <SidebarMenu>
-                  <NavItem
-                    active={location.pathname.startsWith("/documents")}
-                    icon={FileTextIcon}
-                    onClick={() => navigate("/documents")}
-                  >
-                    {t("navigationDocuments")}
-                  </NavItem>
-                  <NavItem
-                    active={location.pathname === "/square"}
-                    icon={Globe2Icon}
-                    onClick={() => navigate("/square")}
-                  >
-                    {t("navigationSquare")}
-                  </NavItem>
-                  <NavItem
-                    active={location.pathname === `/u/${me.data.user_id}`}
-                    icon={UserRoundIcon}
-                    onClick={() => navigate(`/u/${me.data.user_id}`)}
-                  >
-                    {t("navigationPersonalPage")}
-                  </NavItem>
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-            {me.data.is_root ? (
-              <SidebarGroup>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    <NavItem
-                      active={location.pathname === "/admin"}
-                      icon={Settings2Icon}
-                      onClick={() => navigate("/admin")}
-                    >
-                      {t("navigationAdministration")}
-                    </NavItem>
-                    <NavItem
-                      active={location.pathname === "/admin/ai-requests"}
-                      icon={SparklesIcon}
-                      onClick={() => navigate("/admin/ai-requests")}
-                    >
-                      {t("navigationAiRequests")}
-                    </NavItem>
-                    <NavItem
-                      active={location.pathname === "/admin/system-resources"}
-                      icon={HardDriveIcon}
-                      onClick={() => navigate("/admin/system-resources")}
-                    >
-                      {t("navigationSystemResources")}
-                    </NavItem>
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            ) : null}
-          </SidebarContent>
-        </Sidebar>
-        <SidebarInset>
-          <header className="sticky top-0 z-10 flex h-14 items-center gap-3 border-b bg-background px-4">
-            <SidebarTrigger />
-            <Separator orientation="vertical" className="h-5" />
-            <p className="min-w-0 flex-1 truncate text-sm font-medium">
-              {pageTitle(location.pathname, t)}
-            </p>
-            {me.data.is_root ? (
-              <Badge variant="outline" className="hidden sm:inline-flex">
-                <ShieldCheckIcon data-icon="inline-start" />
-                {t("root")}
-              </Badge>
-            ) : null}
+      <AppLayout
+        logo={{ light: <CtxMark />, dark: <CtxMark /> }}
+        title={t("appName")}
+        nav={nav}
+        pageTitle={title}
+        headerSlot={
+          <>
+            <RefreshButton />
             <LanguageSelect />
-            <LinkitMyInfo />
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={t("refreshDocuments")}
-                    onClick={refresh}
-                  />
-                }
-              >
-                <RefreshCwIcon />
-              </TooltipTrigger>
-              <TooltipContent>{t("refreshDocuments")}</TooltipContent>
-            </Tooltip>
-          </header>
-          <Routes>
-            <Route
-              path="/documents"
-              element={<DocumentListPage auth={auth} />}
-            />
-            <Route
-              path="/documents/new"
-              element={<NewDocumentPage auth={auth} />}
-            />
-            <Route
-              path="/documents/:documentId"
-              element={<ExistingDocumentPage auth={auth} />}
-            />
-            <Route
-              path="/admin"
-              element={
-                me.data.is_root ? (
-                  <AdministrationPage auth={auth} />
-                ) : (
-                  <Navigate to="/documents" replace />
-                )
-              }
-            />
-            <Route
-              path="/admin/ai-requests"
-              element={
-                me.data.is_root ? (
-                  <AiRequestAuditPage auth={auth} />
-                ) : (
-                  <Navigate to="/documents" replace />
-                )
-              }
-            />
-            <Route
-              path="/admin/system-resources"
-              element={
-                me.data.is_root ? (
-                  <SystemResourcesPage auth={auth} />
-                ) : (
-                  <Navigate to="/documents" replace />
-                )
-              }
-            />
-            <Route
-              path="/settings/api-keys"
-              element={<ApiKeysPage auth={auth} />}
-            />
-            <Route path="*" element={<Navigate to="/documents" replace />} />
-          </Routes>
-        </SidebarInset>
-      </SidebarProvider>
+          </>
+        }
+      >
+        <Routes>
+          <Route path="/documents" element={<DocumentListPage auth={auth} />} />
+          <Route
+            path="/documents/new"
+            element={<NewDocumentPage auth={auth} />}
+          />
+          <Route
+            path="/documents/:documentId"
+            element={<ExistingDocumentPage auth={auth} />}
+          />
+          <Route
+            path="/admin"
+            element={
+              me.data.is_root ? (
+                <AdministrationPage auth={auth} />
+              ) : (
+                <Navigate to="/documents" replace />
+              )
+            }
+          />
+          <Route
+            path="/admin/ai-requests"
+            element={
+              me.data.is_root ? (
+                <AiRequestAuditPage auth={auth} />
+              ) : (
+                <Navigate to="/documents" replace />
+              )
+            }
+          />
+          <Route
+            path="/admin/system-resources"
+            element={
+              me.data.is_root ? (
+                <SystemResourcesPage auth={auth} />
+              ) : (
+                <Navigate to="/documents" replace />
+              )
+            }
+          />
+          <Route
+            path="/settings/api-keys"
+            element={<ApiKeysPage auth={auth} />}
+          />
+          <Route path="*" element={<Navigate to="/documents" replace />} />
+        </Routes>
+      </AppLayout>
     </TooltipProvider>
   )
 }
@@ -4506,27 +4407,6 @@ const markdownComponents = {
   td: ({ children }: { children?: ReactNode }) => (
     <td className="border-b px-3 py-2 align-top">{children}</td>
   ),
-}
-
-function NavItem({
-  active,
-  icon: Icon,
-  onClick,
-  children,
-}: {
-  active: boolean
-  icon: LucideIcon
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <SidebarMenuItem>
-      <SidebarMenuButton isActive={active} onClick={onClick}>
-        <Icon />
-        <span>{children}</span>
-      </SidebarMenuButton>
-    </SidebarMenuItem>
-  )
 }
 
 function PublicListSkeleton() {
