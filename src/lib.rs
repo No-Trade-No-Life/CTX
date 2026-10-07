@@ -5,20 +5,24 @@ mod crypto;
 mod db;
 mod language;
 mod resources;
+mod views;
 mod web;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use auth_mini_axum::{AuthMiniLayer, JwksCachePolicy};
 use db::Database;
 use thiserror::Error;
+use views::ViewCounter;
 
 pub use web::router;
 
 #[derive(Clone, Debug)]
 pub struct App {
     database: Database,
+    views: Arc<ViewCounter>,
 }
 
 #[derive(Debug, Error)]
@@ -47,6 +51,7 @@ impl App {
         std::fs::create_dir_all(&state_directory).map_err(HttpServerError::DataDirectory)?;
         Ok(Self {
             database: Database::open(state_directory)?,
+            views: Arc::new(ViewCounter::new()),
         })
     }
 
@@ -65,7 +70,12 @@ impl App {
         tokio::spawn(async move {
             ai::run_worker(worker_database).await;
         });
-        let app = web::router(self.database, &auth);
+        let view_database = self.database.clone();
+        let counter = Arc::clone(&self.views);
+        tokio::spawn(async move {
+            views::run_flusher(view_database, counter).await;
+        });
+        let app = web::router(self.database, self.views, &auth);
         let listener = tokio::net::TcpListener::bind(address).await?;
         axum::serve(listener, app).await?;
         Ok(())

@@ -80,6 +80,7 @@ const englishCopy = defineCopy({
   backToDocuments: "Back to documents",
   updatedOn: "Updated {date}",
   publishedOn: "Published {date}",
+  viewCount: "Reads {count}",
   publicationTime: "Publication time",
   publicationTimeDescription:
     "Set the public date independently when this document was imported.",
@@ -443,6 +444,7 @@ const chineseCopy: Copy = {
   backToDocuments: "返回文档",
   updatedOn: "更新于 {date}",
   publishedOn: "发布于 {date}",
+  viewCount: "阅读 {count}",
   publicationTime: "发布时间",
   publicationTimeDescription: "导入的文档可以单独调整公开发布时间。",
   savePublicationTime: "保存发布时间",
@@ -779,6 +781,7 @@ const japaneseCopy: Copy = {
   backToDocuments: "文書に戻る",
   updatedOn: "更新日 {date}",
   publishedOn: "公開日 {date}",
+  viewCount: "閲覧 {count}",
   publicationTime: "公開日時",
   publicationTimeDescription:
     "インポートした文書の公開日時を個別に設定します。",
@@ -1125,6 +1128,7 @@ const spanishCopy: Copy = {
   backToDocuments: "Volver a documentos",
   updatedOn: "Actualizado {date}",
   publishedOn: "Publicado {date}",
+  viewCount: "Lecturas {count}",
   publicationTime: "Fecha de publicación",
   publicationTimeDescription:
     "Ajusta la fecha pública por separado cuando el documento fue importado.",

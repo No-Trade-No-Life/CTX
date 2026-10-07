@@ -47,6 +47,12 @@ public square for anyone to read.
   for an anchored inline comment. Comments are scoped to the published
   Markdown revision and the language being read; public reads use
   `/api/public/documents/{document_id}/comments`.
+- Readers are counted. Each read of a published document, whether through the
+  reader page or `GET /api/public/documents/{document_id}`, increments its
+  view counters (total reads, human reads, and unique human readers per day),
+  and the article header shows the total. Counts accumulate in memory and
+  flush to `SQLite` in five-second batches, so reading never waits on a write
+  and a crash can lose at most one batch.
 - Every author can create one dedicated profile document. Its public page at
   `#/u/{owner_id}` presents Linkit identity and avatar, a 52-week heatmap of
   published articles, and URL-state tabs for an objective AI-generated

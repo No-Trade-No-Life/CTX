@@ -110,6 +110,12 @@ export type DailyTimelineEntry = {
   evidence: SummaryEvidence[]
 }
 
+export type DocumentViewStats = {
+  total: number
+  human: number
+  unique_human: number
+}
+
 export type PublicDocumentDetail = {
   id: string
   owner_id: string
@@ -126,6 +132,7 @@ export type PublicDocumentDetail = {
   translation_status: "queued" | "running" | "succeeded" | "failed" | null
   is_translation_fallback: boolean
   published_at: number
+  views: DocumentViewStats
 }
 
 export type PublicUserProfile = {
