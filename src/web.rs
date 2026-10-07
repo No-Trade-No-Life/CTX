@@ -48,6 +48,10 @@ struct AppState {
 #[derive(Clone, Debug)]
 struct Principal {
     user_id: String,
+    /// Whether the caller authenticated with a user API key instead of a
+    /// browser session. Machine clients count as readers; editor sessions do
+    /// not, so opening the editor never inflates a document's read count.
+    via_api_key: bool,
 }
 
 async fn request_auth(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
@@ -75,6 +79,7 @@ async fn request_principal(state: &AppState, headers: &HeaderMap) -> Result<Prin
             .map_err(|_| ApiError::unauthorized("invalid or expired bearer token"))?;
         return Ok(Principal {
             user_id: principal.subject,
+            via_api_key: false,
         });
     };
     let Some((user_id, secret)) = rest
@@ -88,6 +93,7 @@ async fn request_principal(state: &AppState, headers: &HeaderMap) -> Result<Prin
         .authenticate_api_key(user_id, &hash_secret(secret))?
         .map(|_| Principal {
             user_id: user_id.to_owned(),
+            via_api_key: true,
         })
         .ok_or_else(|| ApiError::unauthorized("invalid API key"))
 }
@@ -335,12 +341,17 @@ async fn get_document(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(document_id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<DocumentDetail>, ApiError> {
-    Ok(Json(require_document_owner(
-        &state.database,
-        &principal,
-        &document_id,
-    )?))
+    let document = require_document_owner(&state.database, &principal, &document_id)?;
+    if principal.via_api_key {
+        state.views.record(ViewEvent {
+            document_id: document_id.as_str(),
+            client: client_address(&headers),
+            user_agent: user_agent(&headers),
+        });
+    }
+    Ok(Json(document))
 }
 
 async fn save_document(
@@ -1141,18 +1152,18 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, PublicDocumentQuery, WebAssets, client_address, hash_secret, image_content_type,
-        is_media_id, public_document, public_media, publication_visibility, request_principal,
-        requested_language, source_language_or_und, static_asset, store_media,
-        validate_ai_base_url,
+        AppState, Principal, PublicDocumentQuery, WebAssets, client_address, get_document,
+        hash_secret, image_content_type, is_media_id, public_document, public_media,
+        publication_visibility, request_principal, requested_language, source_language_or_und,
+        static_asset, store_media, validate_ai_base_url,
     };
     use crate::{
-        db::{CreateDocumentOutcome, Database, NewDocument},
+        db::{CreateDocumentOutcome, Database, DocumentViewStats, NewDocument},
         resources::ResourceMonitor,
         views::ViewCounter,
     };
     use axum::{
-        extract::{Path, Query, State},
+        extract::{Extension, Path, Query, State},
         http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, header},
     };
     use std::sync::{Arc, Mutex};
@@ -1303,6 +1314,7 @@ mod tests {
 
         let principal = request_principal(&state, &headers).await.unwrap();
         assert_eq!(principal.user_id, "user-a");
+        assert!(principal.via_api_key);
 
         let wrong_secret = HeaderMap::from_iter([(
             header::AUTHORIZATION,
@@ -1417,5 +1429,62 @@ mod tests {
         assert_eq!(third.0.views.total, 3);
         assert_eq!(third.0.views.human, 2);
         assert_eq!(third.0.views.unique_human, 1);
+    }
+
+    #[tokio::test]
+    async fn api_key_document_reads_are_counted_while_editor_sessions_are_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path()).unwrap();
+        let CreateDocumentOutcome::Created(article) = database
+            .create_document(&NewDocument {
+                author_id: "author-a",
+                title: "Agent-read article",
+                source_language: "en-US",
+                content: "# Agent",
+                message: "Created document",
+                parent_id: None,
+            })
+            .unwrap()
+        else {
+            panic!("expected the document to be created");
+        };
+        let state = test_state(database);
+        let document_id = article.document.id.clone();
+
+        let agent = Principal {
+            user_id: "author-a".to_owned(),
+            via_api_key: true,
+        };
+        let response = get_document(
+            State(state.clone()),
+            Extension(agent),
+            Path(document_id.clone()),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.0.document.id, document_id);
+        let mut views = DocumentViewStats::default();
+        state.views.merge_pending(&document_id, &mut views);
+        assert_eq!(views.total, 1);
+        assert_eq!(views.human, 0);
+
+        // Editor sessions of the owner keep the read path free of counting.
+        let editor = Principal {
+            user_id: "author-a".to_owned(),
+            via_api_key: false,
+        };
+        let response = get_document(
+            State(state.clone()),
+            Extension(editor),
+            Path(document_id.clone()),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.0.document.id, document_id);
+        let mut views = DocumentViewStats::default();
+        state.views.merge_pending(&document_id, &mut views);
+        assert_eq!(views.total, 1);
     }
 }
