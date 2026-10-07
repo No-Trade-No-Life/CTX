@@ -244,6 +244,16 @@ function contentNavItems(
   ]
 }
 
+function settingsNavItems(t: NavigationCopy): AppNavItem[] {
+  return [
+    {
+      to: "/settings/api-keys",
+      label: t("navigationApiKeys"),
+      icon: <KeyRoundIcon />,
+    },
+  ]
+}
+
 function administrationNavItems(t: NavigationCopy): AppNavItem[] {
   return [
     {
@@ -288,16 +298,14 @@ function PublicShell() {
         personalPage: signedIn && me.data ? `/u/${me.data.user_id}` : undefined,
       }),
     },
-    {
-      label: t("navigationGroupSettings"),
-      items: [
-        {
-          to: "/settings/api-keys",
-          label: t("navigationApiKeys"),
-          icon: <KeyRoundIcon />,
-        },
-      ],
-    },
+    ...(signedIn
+      ? [
+          {
+            label: t("navigationGroupSettings"),
+            items: settingsNavItems(t),
+          },
+        ]
+      : []),
     ...(me.data?.is_root
       ? [
           {
@@ -356,6 +364,10 @@ function CtxShell({ auth }: { auth: AuthSdk }) {
         documents: true,
         personalPage: `/u/${me.data.user_id}`,
       }),
+    },
+    {
+      label: t("navigationGroupSettings"),
+      items: settingsNavItems(t),
     },
     ...(me.data.is_root
       ? [
