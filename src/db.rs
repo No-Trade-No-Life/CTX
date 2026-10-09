@@ -1031,17 +1031,6 @@ impl Database {
             "",
             updated_at,
         )?;
-        if detail.document.kind == "profile" {
-            for task in PROFILE_SUMMARY_TASKS {
-                enqueue_ai_request(&transaction, id, source_revision_id, task, "", updated_at)?;
-            }
-        } else {
-            force_enqueue_author_profile_metadata(
-                &transaction,
-                &detail.document.owner_id,
-                updated_at,
-            )?;
-        }
         transaction.commit()?;
         detail.document.status = "published".to_owned();
         detail.document.visibility = visibility.to_owned();
@@ -1077,67 +1066,6 @@ impl Database {
         }
         transaction.commit()?;
         Ok(tasks.into_iter().map(str::to_owned).collect())
-    }
-
-    pub fn schedule_profile_summary_tasks_if_due(&self) -> Result<(), DatabaseError> {
-        let schedule_day = Utc::now().date_naive().to_string();
-        let mut connection = self.connection()?;
-        let previous_day: Option<String> = connection
-            .query_row(
-                "SELECT value FROM app_meta WHERE key = 'profile_summary_schedule_day'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if previous_day.as_deref() == Some(schedule_day.as_str()) {
-            return Ok(());
-        }
-        let transaction = connection.transaction()?;
-        let profiles = {
-            let mut statement = transaction.prepare(
-                "SELECT id, published_revision_id, published_source_language FROM documents WHERE document_kind = 'profile' AND status = 'published' AND published_revision_id IS NOT NULL",
-            )?;
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        for (document_id, source_revision_id, source_language) in profiles {
-            if source_language
-                .as_deref()
-                .is_none_or(|language| language == "und")
-            {
-                force_enqueue_ai_request(
-                    &transaction,
-                    &document_id,
-                    &source_revision_id,
-                    "metadata",
-                    "",
-                    now(),
-                )?;
-            }
-            for task in PROFILE_SUMMARY_TASKS {
-                force_enqueue_ai_request(
-                    &transaction,
-                    &document_id,
-                    &source_revision_id,
-                    task,
-                    "",
-                    now(),
-                )?;
-            }
-        }
-        transaction.execute(
-            "INSERT INTO app_meta(key, value) VALUES ('profile_summary_schedule_day', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [schedule_day],
-        )?;
-        transaction.commit()?;
-        Ok(())
     }
 
     pub fn apply_profile_summary(
@@ -1730,44 +1658,6 @@ fn force_enqueue_ai_request(
         "INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6) ON CONFLICT(document_id, source_revision_id, task, target_language) DO UPDATE SET status = 'queued', result_summary = NULL, error = NULL, openai_lb_request_id = NULL, started_at = NULL, completed_at = NULL WHERE ai_requests.status != 'running'",
         params![Uuid::new_v4().to_string(), document_id, source_revision_id, task, target_language, created_at],
     )?;
-    Ok(())
-}
-
-fn force_enqueue_author_profile_metadata(
-    transaction: &rusqlite::Transaction<'_>,
-    owner_id: &str,
-    created_at: i64,
-) -> Result<(), DatabaseError> {
-    let profiles = {
-        let mut statement = transaction.prepare(
-            "SELECT id, published_revision_id FROM documents WHERE owner_id = ?1 AND document_kind = 'profile' AND status = 'published' AND published_revision_id IS NOT NULL",
-        )?;
-        statement
-            .query_map([owner_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    for (document_id, source_revision_id) in profiles {
-        force_enqueue_ai_request(
-            transaction,
-            &document_id,
-            &source_revision_id,
-            "metadata",
-            "",
-            created_at,
-        )?;
-        for task in PROFILE_SUMMARY_TASKS {
-            force_enqueue_ai_request(
-                transaction,
-                &document_id,
-                &source_revision_id,
-                task,
-                "",
-                created_at,
-            )?;
-        }
-    }
     Ok(())
 }
 
@@ -3332,7 +3222,7 @@ mod tests {
                 .into_iter()
                 .find(|request| request.id == profile_request_id)
                 .map(|request| request.status),
-            Some("queued".to_owned())
+            Some("succeeded".to_owned())
         );
 
         let mut profile_metadata = metadata("en-US", "Profile description");
@@ -3406,7 +3296,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_publication_queues_independent_summary_tasks() {
+    fn profile_summaries_are_queued_only_when_the_owner_asks() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path()).unwrap();
         let profile = database.profile_document("author-a").unwrap();
@@ -3427,18 +3317,19 @@ mod tests {
             .unwrap()
             .unwrap();
         let requests = database.ai_requests().unwrap();
-        assert_eq!(requests.len(), PROFILE_SUMMARY_TASKS.len() + 1);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].task, "metadata");
+
+        let queued = database
+            .enqueue_profile_summary_tasks(&profile.document.id, &source.revision.id, None)
+            .unwrap();
+        assert_eq!(queued.len(), PROFILE_SUMMARY_TASKS.len());
+        let requests = database.ai_requests().unwrap();
         assert!(PROFILE_SUMMARY_TASKS.iter().all(|task| {
             requests
                 .iter()
                 .any(|request| request.task == *task && request.target_language.is_empty())
         }));
-
-        database.schedule_profile_summary_tasks_if_due().unwrap();
-        let scheduled = database.ai_requests().unwrap();
-        assert_eq!(scheduled.len(), PROFILE_SUMMARY_TASKS.len() + 1);
-        database.schedule_profile_summary_tasks_if_due().unwrap();
-        assert_eq!(database.ai_requests().unwrap().len(), scheduled.len());
 
         let queued = database
             .enqueue_profile_summary_tasks(
@@ -3509,6 +3400,14 @@ mod tests {
             .publish_document(&profile.document.id, &source.revision.id, "public")
             .unwrap()
             .unwrap();
+        let queued = reopened
+            .enqueue_profile_summary_tasks(
+                &profile.document.id,
+                &source.revision.id,
+                Some("profile_mbti"),
+            )
+            .unwrap();
+        assert_eq!(queued, vec!["profile_mbti"]);
         assert!(
             reopened
                 .ai_requests()
