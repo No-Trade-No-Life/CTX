@@ -289,7 +289,7 @@ const englishCopy = defineCopy({
   profileTabPhilosophy: "Philosophy",
   profileTabTimeline: "Timeline",
   profileTabArticle: "Profile article",
-  refreshProfileSummaries: "Refresh profile summaries",
+  refreshProfileSummaries: "Regenerate profile summaries",
   profileSummariesQueued: "Profile summary tasks queued",
   personalityAnalysis: "Personality & psychological reading",
   personalityAnalysisDescription:
@@ -626,7 +626,7 @@ const chineseCopy: Copy = {
   profileActivityMore: "多",
   experienceSummary: "经历简历",
   experienceSummaryDescription:
-    "根据该作者全部已发布文章自动生成的客观中立简历。",
+    "根据该作者全部已发布文章生成的客观中立简历。",
   experienceSummaryEmpty: "该作者已发布的文章暂未包含可整理为简历的经历事实。",
   profileTabResume: "经历简历",
   profileTabPersonality: "人格心理分析",

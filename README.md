@@ -67,14 +67,15 @@ public square for anyone to read.
   timeline (`?tab=timeline`), and the published profile article
   (`?tab=article`). The summaries are derived from the author's complete
   published article set. Experience, personality, MBTI, Schwartz values,
-  motivations, philosophy, and timeline are independent AI queue tasks: they
-  run asynchronously after a profile or article publication, are scheduled once
-  per day by the worker, and can be manually requeued by the profile owner with
+  motivations, philosophy, and timeline are independent AI queue tasks that
+  are generated only when the profile owner requests them, from the regenerate
+  button on the personal page or with
   `POST /api/v1/documents/{document_id}/profile-summaries` and
-  `{"task":"all"}` (or one task name). Each completed task updates only its
-  own structured field, records an auditable request, and requeues translated
-  profile metadata for every configured language. They retain source links and
-  keep psychological readings explicitly non-clinical.
+  `{"task":"all"}` (or one task name); publishing a profile or an article does
+  not refresh them. Each completed task updates only its own structured field,
+  records an auditable request, and requeues translated profile metadata for
+  every configured language. They retain source links and keep psychological
+  readings explicitly non-clinical.
   Profile documents are served from `/api/public/users/{owner_id}/profile` and
   do not appear in the square.
 - Root-only OpenAI-compatible routing configuration for `https://openai.ntnl.io/v1`.
