@@ -319,7 +319,7 @@ function PublicShell() {
   return (
     <TooltipProvider>
       <AppLayout
-        logo={{ light: <CtxMark />, dark: <CtxMark /> }}
+        logo={<CtxMark />}
         title={t("appName")}
         nav={nav}
         pageTitle={title}
@@ -382,7 +382,7 @@ function CtxShell({ auth }: { auth: AuthSdk }) {
   return (
     <TooltipProvider>
       <AppLayout
-        logo={{ light: <CtxMark />, dark: <CtxMark /> }}
+        logo={<CtxMark />}
         title={t("appName")}
         nav={nav}
         pageTitle={title}
