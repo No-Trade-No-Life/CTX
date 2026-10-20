@@ -1,13 +1,12 @@
-import { StrictMode, useEffect } from "react"
+import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { AuthMiniProvider } from "auth-mini-react-components"
-import { LinkitProvider, useLinkit } from "linkit-react-components"
+import { LinkitProvider } from "linkit-react-components"
 import { HashRouter, useLocation } from "react-router-dom"
 
 import "./index.css"
 import App, { PublicApp } from "./App.tsx"
-import { applyFavicon } from "@/lib/favicon"
 import { I18nProvider, localeFor } from "@/lib/i18n.tsx"
 
 const queryClient = new QueryClient({
@@ -38,7 +37,6 @@ function RouteBoundary() {
           linkitBaseUrl="https://linkit.ntnl.io"
         >
           <I18nProvider>
-            <FaviconSync />
             <PublicApp />
           </I18nProvider>
         </LinkitProvider>
@@ -56,21 +54,11 @@ function RouteBoundary() {
         linkitBaseUrl="https://linkit.ntnl.io"
       >
         <I18nProvider>
-          <FaviconSync />
           <App />
         </I18nProvider>
       </LinkitProvider>
     </AuthMiniProvider>
   )
-}
-
-// Keep the favicon in step with the resolved Linkit theme without a reload.
-function FaviconSync() {
-  const { resolvedTheme } = useLinkit()
-  useEffect(() => {
-    applyFavicon(resolvedTheme)
-  }, [resolvedTheme])
-  return null
 }
 
 createRoot(document.getElementById("root")!).render(
