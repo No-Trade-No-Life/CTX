@@ -107,8 +107,8 @@ public square for anyone to read.
 ## Run locally
 
 ```bash
-npm --prefix web ci
-npm --prefix web run build
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web run build
 cargo run
 ```
 
@@ -121,7 +121,7 @@ live under `~/.ctx/`.
 ## Validation
 
 ```bash
-npm --prefix web run build
+pnpm --dir web run build
 cargo fmt --check
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --all-targets --all-features --locked
