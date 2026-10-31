@@ -1,9 +1,6 @@
 import {
-  Children,
-  isValidElement,
   useCallback,
   useEffect,
-  useId,
   useRef,
   useState,
   type ReactNode,
@@ -11,7 +8,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { AuthMiniButton, useAuthMini } from "auth-mini-react-components"
 import { LinkitUserInfo, LinkitUserPicker } from "linkit-react-components"
-import { AppLayout, type AppNavGroup, type AppNavItem } from "@zccz14/ux"
+import { AppLayout, Markdown, type AppNavGroup, type AppNavItem } from "@zccz14/ux"
 import {
   ArrowLeftIcon,
   BookOpenIcon,
@@ -44,10 +41,6 @@ import {
   XIcon,
   type LucideIcon,
 } from "lucide-react"
-import ReactMarkdown from "react-markdown"
-import rehypeKatex from "rehype-katex"
-import remarkGfm from "remark-gfm"
-import remarkMath from "remark-math"
 import {
   Navigate,
   Route,
@@ -2305,13 +2298,7 @@ function PublicDocumentPage() {
               ?.scrollIntoView({ behavior: "smooth", block: "center" })
         }}
       >
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[rehypeKatex]}
-          components={markdownComponents}
-        >
-          {document.data.content}
-        </ReactMarkdown>
+        <Markdown content={document.data.content} />
       </article>
       {document.data.visibility === "private" ? null : (
         <DocumentComments
@@ -2708,13 +2695,7 @@ function SummaryEvidenceList({ evidence }: { evidence: SummaryEvidence[] }) {
 function SummaryMarkdown({ content }: { content: string }) {
   return (
     <article className="mt-10 max-w-[72ch]">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
-        components={markdownComponents}
-      >
-        {content}
-      </ReactMarkdown>
+      <Markdown content={content} />
     </article>
   )
 }
@@ -3278,13 +3259,7 @@ function PublicUserPage() {
             </p>
             {document.metadata.experience_summary ? (
               <article className="mt-10">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex]}
-                  components={markdownComponents}
-                >
-                  {document.metadata.experience_summary}
-                </ReactMarkdown>
+                <Markdown content={document.metadata.experience_summary} />
               </article>
             ) : document.metadata_status ? (
               <Skeleton className="mt-8 h-48 w-full" />
@@ -3306,13 +3281,7 @@ function PublicUserPage() {
             </p>
             {document.metadata.personality_analysis ? (
               <article className="mt-10">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex]}
-                  components={markdownComponents}
-                >
-                  {document.metadata.personality_analysis}
-                </ReactMarkdown>
+                <Markdown content={document.metadata.personality_analysis} />
               </article>
             ) : document.metadata_status ? (
               <Skeleton className="mt-8 h-64 w-full" />
@@ -3392,13 +3361,7 @@ function PublicUserPage() {
               )}
             </p>
             <article className="mt-10 max-w-[72ch]">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
-                components={markdownComponents}
-              >
-                {document.content}
-              </ReactMarkdown>
+              <Markdown content={document.content} />
             </article>
           </TabsContent>
         </Tabs>
@@ -4181,199 +4144,6 @@ function AiRequestAuditPage({ auth }: { auth: AuthSdk }) {
       )}
     </main>
   )
-}
-
-function MermaidDiagram({ chart }: { chart: string }) {
-  const id = useId().replaceAll(":", "")
-  const [svg, setSvg] = useState<string>()
-  const [failed, setFailed] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    void import("mermaid")
-      .then(({ default: mermaid }) => {
-        if (cancelled) return null
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: "strict",
-          theme: document.documentElement.classList.contains("dark")
-            ? "dark"
-            : "default",
-        })
-        return mermaid.render(`ctx-mermaid-${id}`, chart)
-      })
-      .then((result) => {
-        if (!cancelled && result) setSvg(result.svg)
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [chart, id])
-
-  if (failed)
-    return (
-      <pre className="mt-5 overflow-x-auto rounded-md bg-muted p-4 text-sm leading-6">
-        <code className="font-mono">{chart}</code>
-      </pre>
-    )
-  if (!svg)
-    return (
-      <div
-        aria-busy="true"
-        aria-label="Loading Mermaid diagram"
-        className="mt-5"
-      >
-        <Skeleton className="h-52 w-full" />
-      </div>
-    )
-  return (
-    <div
-      role="img"
-      aria-label="Mermaid diagram"
-      className="mt-5 overflow-x-auto rounded-md border bg-muted/30 p-4 [&_svg]:mx-auto [&_svg]:min-w-max"
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
-  )
-}
-
-function MarkdownPre({ children }: { children?: ReactNode }) {
-  const code = Children.toArray(children).find((child) =>
-    isValidElement<{ className?: string; children?: ReactNode }>(child)
-  )
-  if (
-    isValidElement<{ className?: string; children?: ReactNode }>(code) &&
-    code.props.className?.includes("language-mermaid")
-  )
-    return (
-      <MermaidDiagram
-        chart={markdownText(code.props.children).replace(/\n$/, "")}
-      />
-    )
-
-  return (
-    <pre className="mt-5 overflow-x-auto rounded-md bg-muted p-4 text-sm leading-6">
-      {children}
-    </pre>
-  )
-}
-
-function markdownText(children: ReactNode): string {
-  return Children.toArray(children)
-    .map((child) => {
-      if (typeof child === "string" || typeof child === "number")
-        return String(child)
-      if (isValidElement<{ children?: ReactNode }>(child))
-        return markdownText(child.props.children)
-      return ""
-    })
-    .join("")
-}
-
-const markdownComponents = {
-  h1: ({ children }: { children?: ReactNode }) => (
-    <h1 className="mt-10 text-3xl font-semibold tracking-tight text-balance first:mt-0">
-      {children}
-    </h1>
-  ),
-  h2: ({ children }: { children?: ReactNode }) => (
-    <h2 className="mt-10 text-xl font-semibold tracking-tight text-balance">
-      {children}
-    </h2>
-  ),
-  h3: ({ children }: { children?: ReactNode }) => (
-    <h3 className="mt-7 text-base font-semibold">{children}</h3>
-  ),
-  p: ({ children }: { children?: ReactNode }) => (
-    <p className="mt-5 text-base leading-7 text-foreground/90">{children}</p>
-  ),
-  blockquote: ({ children }: { children?: ReactNode }) => (
-    <blockquote className="mt-5 border-l-2 border-muted-foreground/35 pl-4 text-base leading-7 text-muted-foreground">
-      {children}
-    </blockquote>
-  ),
-  ul: ({
-    children,
-    className,
-  }: {
-    children?: ReactNode
-    className?: string
-  }) => (
-    <ul
-      className={
-        className?.includes("contains-task-list")
-          ? "mt-5 list-none pl-0 text-base leading-7"
-          : "mt-5 list-disc pl-6 text-base leading-7"
-      }
-    >
-      {children}
-    </ul>
-  ),
-  ol: ({ children }: { children?: ReactNode }) => (
-    <ol className="mt-5 list-decimal pl-6 text-base leading-7">{children}</ol>
-  ),
-  li: ({
-    children,
-    className,
-  }: {
-    children?: ReactNode
-    className?: string
-  }) => (
-    <li
-      className={
-        className?.includes("task-list-item") ? "mt-2 flex gap-2" : "mt-1"
-      }
-    >
-      {children}
-    </li>
-  ),
-  code: ({
-    children,
-    className,
-  }: {
-    children?: ReactNode
-    className?: string
-  }) => (
-    <code
-      className={`rounded-sm bg-muted px-1 py-0.5 font-mono text-sm ${className ?? ""}`}
-    >
-      {children}
-    </code>
-  ),
-  pre: MarkdownPre,
-  a: ({ children, href }: { children?: ReactNode; href?: string }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="inline-flex items-center gap-1 text-primary underline underline-offset-4"
-    >
-      {children}
-      <ExternalLinkIcon className="size-3 shrink-0" aria-hidden="true" />
-    </a>
-  ),
-  img: ({ alt, src }: { alt?: string; src?: string }) => (
-    <img src={src} alt={alt ?? ""} className="mt-5 max-w-full rounded-md" />
-  ),
-  hr: () => <Separator className="my-8" />,
-  del: ({ children }: { children?: ReactNode }) => (
-    <del className="text-muted-foreground">{children}</del>
-  ),
-  table: ({ children }: { children?: ReactNode }) => (
-    <div className="mt-5 overflow-x-auto">
-      <table className="w-full border-collapse text-left text-sm">
-        {children}
-      </table>
-    </div>
-  ),
-  th: ({ children }: { children?: ReactNode }) => (
-    <th className="border-b px-3 py-2 font-medium">{children}</th>
-  ),
-  td: ({ children }: { children?: ReactNode }) => (
-    <td className="border-b px-3 py-2 align-top">{children}</td>
-  ),
 }
 
 function PublicListSkeleton() {
