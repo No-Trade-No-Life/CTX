@@ -27,6 +27,9 @@ function RouteBoundary() {
     location.pathname.startsWith("/u/")
   )
     return (
+      // "ctx.ntnl.io" is the Auth Mini audience identifier, not the hostname:
+      // Docs keeps requesting it so credentials issued before the rename still
+      // validate.
       <AuthMiniProvider
         authMiniBaseUrl="https://auth.ntnl.io"
         audiences={["ctx.ntnl.io", "linkit.ntnl.io"]}

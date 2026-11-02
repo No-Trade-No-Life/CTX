@@ -125,7 +125,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { CtxMark } from "@/components/ctx-mark"
+import { DocsMark } from "@/components/docs-mark"
 import { DocumentTree } from "@/components/document-tree"
 import { MarkdownEditor } from "@/components/markdown-editor"
 import { Separator } from "@/components/ui/separator"
@@ -193,7 +193,7 @@ function useImageUpload(auth: AuthSdk) {
 function PrivateApp() {
   const { isReady, isAuthenticated, sdk } = useAuthMini()
   if (!isReady || !isAuthenticated || !sdk) return <LoadingPage />
-  return <CtxShell auth={sdk} />
+  return <DocsShell auth={sdk} />
 }
 
 type NavigationCopy = (
@@ -312,7 +312,7 @@ function PublicShell() {
   return (
     <TooltipProvider>
       <AppLayout
-        logo={<CtxMark />}
+        logo={<DocsMark />}
         title={t("appName")}
         nav={nav}
         pageTitle={title}
@@ -330,7 +330,7 @@ function PublicShell() {
   )
 }
 
-function CtxShell({ auth }: { auth: AuthSdk }) {
+function DocsShell({ auth }: { auth: AuthSdk }) {
   const queryClient = useQueryClient()
   const location = useLocation()
   const { t } = useI18n()
@@ -375,7 +375,7 @@ function CtxShell({ auth }: { auth: AuthSdk }) {
   return (
     <TooltipProvider>
       <AppLayout
-        logo={<CtxMark />}
+        logo={<DocsMark />}
         title={t("appName")}
         nav={nav}
         pageTitle={title}
@@ -4270,7 +4270,7 @@ function datetimeLocalValue(timestamp: number) {
 function useBrowserTitle(title?: string) {
   useEffect(() => {
     if (!title) return
-    window.document.title = `${title} · CTX`
+    window.document.title = `${title} · Docs`
   }, [title])
 }
 

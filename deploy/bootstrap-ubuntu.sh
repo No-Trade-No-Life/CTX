@@ -11,7 +11,7 @@ install -d -o ctx -g ctx -m 0700 /var/lib/ctx/backups
 
 install -m 0644 /dev/stdin /etc/systemd/system/ctx.service <<'UNIT'
 [Unit]
-Description=CTX AI-native Markdown publishing tool
+Description=Docs AI-native Markdown publishing tool
 After=network-online.target
 Wants=network-online.target
 
@@ -35,7 +35,7 @@ WantedBy=multi-user.target
 UNIT
 
 install -m 0644 /dev/stdin /etc/caddy/Caddyfile <<'CADDY'
-ctx.ntnl.io {
+docs.ntnl.io, ctx.ntnl.io {
     reverse_proxy 127.0.0.1:8080
 }
 CADDY

@@ -1,6 +1,6 @@
-# CTX
+# Docs
 
-CTX is an AI-native Markdown publishing tool. Every document belongs directly
+Docs is an AI-native Markdown publishing tool. Every document belongs directly
 to its author, keeps immutable Markdown revisions, and can be published to a
 public square for anyone to read.
 
@@ -32,9 +32,9 @@ public square for anyone to read.
   code blocks and keep their language marker when saved. Published readers
   render GFM, Mermaid diagrams, inline KaTeX formulas (`$...$`), and displayed
   KaTeX formulas (`$$...$$`). Pasting a PNG, JPEG, GIF, or WebP image up to
-  10 MiB uploads it to CTX and inserts a content-addressed
-  `https://ctx.ntnl.io/media/{sha256}` Markdown URL; media files live under
-  `~/.ctx/media/`.
+  10 MiB uploads it to Docs and inserts a content-addressed
+  `https://docs.ntnl.io/media/{sha256}` Markdown URL; media files live under
+  `~/.ctx/media/`, the pre-rename state path that existing installations keep.
 - The square, article reader, profile page, and authenticated editor use the
   same responsive sidebar and header layout. The sidebar includes the
   signed-in user's personal page at `#/u/{owner_id}`. Public articles are at
@@ -87,9 +87,9 @@ public square for anyone to read.
   authenticated API as browser sessions, and revocable at any time.
 - Publishing saves the original Markdown immediately, then queues auditable AI
   metadata extraction against that fixed revision. The Linkit profile owns the
-  reader's language: CTX follows the Chinese or English choice stored there,
+  reader's language: Docs follows the Chinese or English choice stored there,
   and the automatic setting follows the browser. When a reader opens an
-  unavailable UI language (`zh-CN` or `en-US`), CTX queues one
+  unavailable UI language (`zh-CN` or `en-US`), Docs queues one
   Markdown-preserving translation together with localized editorial metadata.
   Translations retain Markdown structure, including links, code, GFM, and
   Mermaid; the reader shows the original with a background-work notice until
@@ -97,7 +97,7 @@ public square for anyone to read.
 - Root administrators can inspect queued, running, successful, and failed
   metadata/translation requests at **Administration → AI request audit**. Each
   completed upstream interaction records its `x-openai-lb-request-id`, so a
-  CTX task can be correlated directly with its OpenAI LB request audit.
+  Docs task can be correlated directly with its OpenAI LB request audit.
 - Authors can ask AI to polish a saved document and review the proposed
   Markdown before explicitly saving it as a new immutable revision.
 - Root administrators can inspect five-second CPU, memory, network, disk, and
@@ -115,7 +115,7 @@ cargo run
 Open `http://127.0.0.1:8080/#/square` to browse published articles, or open
 `#/documents` to sign in and create a document. The first authenticated Auth
 Mini user chooses **Become root administrator**, then configures the OpenAI-LB
-model and key in **Administration**. CTX's local database and encryption key
+model and key in **Administration**. Docs's local database and encryption key
 live under `~/.ctx/`.
 
 ## Validation
@@ -135,8 +135,9 @@ binary.
 Merging `main` creates a GitHub Release and deploys it to the one configured
 Tokyo EC2 instance through AWS Systems Manager. There is intentionally no
 second environment. The deployment uses the instance's AWS public DNS name as
-the target of the proxied Cloudflare CNAME for `ctx.ntnl.io`; it does not use
-an Elastic IP.
+the target of the proxied Cloudflare CNAME for `docs.ntnl.io`, and the same
+origin also answers `ctx.ntnl.io` so media URLs and API clients created before
+the rename keep working; it does not use an Elastic IP.
 
 The repository requires these GitHub Actions variables:
 
@@ -145,4 +146,4 @@ The repository requires these GitHub Actions variables:
 - `EC2_INSTANCE_ID`
 
 Bootstrap the instance once using `deploy/bootstrap-ubuntu.sh`. Caddy listens
-at the Cloudflare origin and proxies the local CTX listener at port `8080`.
+at the Cloudflare origin and proxies the local Docs listener at port `8080`.

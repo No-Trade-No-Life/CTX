@@ -19,6 +19,11 @@ use views::ViewCounter;
 
 pub use web::router;
 
+/// Auth Mini audience this service verifies. It is a stable token identity,
+/// not the public hostname: the Docs rename keeps the pre-rename audience so
+/// credentials issued while the product was called CTX stay valid.
+pub const AUTH_AUDIENCE: &str = "ctx.ntnl.io";
+
 #[derive(Clone, Debug)]
 pub struct App {
     database: Database,
@@ -27,9 +32,9 @@ pub struct App {
 
 #[derive(Debug, Error)]
 pub enum HttpServerError {
-    #[error("failed to prepare the CTX data directory")]
+    #[error("failed to prepare the Docs data directory")]
     DataDirectory(#[source] std::io::Error),
-    #[error("failed to initialize the CTX database")]
+    #[error("failed to initialize the Docs database")]
     Database(#[from] db::DatabaseError),
     #[error("failed to initialize Auth Mini verification")]
     Auth(#[from] auth_mini_axum::AuthMiniError),
@@ -38,7 +43,7 @@ pub enum HttpServerError {
 }
 
 impl App {
-    /// Opens CTX's host-local state directory and `SQLite` database.
+    /// Opens Docs's host-local state directory and `SQLite` database.
     ///
     /// # Errors
     ///
@@ -55,7 +60,7 @@ impl App {
         })
     }
 
-    /// Starts CTX's authenticated HTTP server at the supplied local address.
+    /// Starts Docs's authenticated HTTP server at the supplied local address.
     ///
     /// # Errors
     ///
@@ -63,7 +68,7 @@ impl App {
     pub async fn serve(self, address: SocketAddr) -> Result<(), HttpServerError> {
         let auth = AuthMiniLayer::from_issuer_background(
             "https://auth.ntnl.io",
-            "ctx.ntnl.io",
+            AUTH_AUDIENCE,
             JwksCachePolicy::default(),
         )?;
         let worker_database = self.database.clone();
