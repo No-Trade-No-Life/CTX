@@ -7,7 +7,7 @@ const defineCopy = <T extends Record<string, string>>(translations: T) =>
   translations
 
 const englishCopy = defineCopy({
-  appName: "CTX",
+  appName: "Docs",
   navigationDocuments: "My documents",
   navigationSquare: "Square",
   navigationPersonalPage: "Personal page",
@@ -186,7 +186,7 @@ const englishCopy = defineCopy({
   translationInProgress:
     "You are reading the original while the requested article and its editorial metadata are translated in the background.",
   squareTitle: "The square",
-  squareDescription: "Published Markdown from everyone writing with CTX.",
+  squareDescription: "Published Markdown from everyone writing with Docs.",
   squareEmptyTitle: "Nothing has been published yet",
   squareEmptyDescription:
     "When someone publishes a document, it will appear here for everyone to read.",
@@ -195,16 +195,16 @@ const englishCopy = defineCopy({
   backToSquare: "Back to the square",
   publishedDocumentNotFound: "Published document not found",
   rootConfigured: "Root user configured",
-  initializeTitle: "Initialize CTX",
+  initializeTitle: "Initialize Docs",
   initializeDescription:
-    "The first authenticated Auth Mini user becomes CTX's root administrator. Sign-in stays owned by Auth Mini.",
+    "The first authenticated Auth Mini user becomes Docs' root administrator. Sign-in stays owned by Auth Mini.",
   becomeRoot: "Become root administrator",
   aiConfigurationSaved: "AI configuration saved",
   administrationDescription:
     "Instance-only controls stay separate from writing and publishing.",
   openAiRouting: "OpenAI routing",
   openAiRoutingDescription:
-    "CTX calls an OpenAI-compatible Responses API. The API key is encrypted on this host and never returned to the browser.",
+    "Docs calls an OpenAI-compatible Responses API. The API key is encrypted on this host and never returned to the browser.",
   configured: "configured",
   needsKey: "needs key",
   baseUrl: "Base URL",
@@ -212,7 +212,7 @@ const englishCopy = defineCopy({
   apiKey: "API key",
   apiKeyPlaceholder: "Leave blank to keep the encrypted key",
   apiKeyDescription:
-    "Only root can update this secret. CTX will never echo it back.",
+    "Only root can update this secret. Docs will never echo it back.",
   saveAiConfiguration: "Save AI configuration",
   testAiConfiguration: "Test configuration",
   aiConfigurationTestSucceeded: "AI configuration test succeeded",
@@ -230,14 +230,14 @@ const englishCopy = defineCopy({
   aiRequestError: "Error",
   aiRequestsEmpty: "No automatic AI requests have been recorded.",
   systemResourcesDescription:
-    "A five-second view of the hosted CTX process, its storage, and the host it runs on.",
+    "A five-second view of the hosted Docs process, its storage, and the host it runs on.",
   systemResourcesRefreshes: "Refreshes every {seconds} seconds",
   systemResourcesSampledAt: "Sampled {date}",
   systemResourceCpu: "CPU",
   systemResourceLoad1m: "1m load",
   systemResourceLogicalCpus: "Logical CPUs",
   systemResourceMemory: "Memory",
-  systemResourceProcessMemory: "CTX process",
+  systemResourceProcessMemory: "Docs process",
   systemResourceOtherMemory: "Other system",
   systemResourceAvailableMemory: "Available",
   systemResourceSwap: "Swap",
@@ -365,14 +365,14 @@ const englishCopy = defineCopy({
   inlineComment: "Passage comment",
   fullComment: "Article comment",
   commentPosted: "Comment posted",
-  requestFailed: "CTX could not complete this request",
+  requestFailed: "Docs could not complete this request",
 })
 
 type TranslationKey = keyof typeof englishCopy
 type Copy = Record<TranslationKey, string>
 
 const chineseCopy: Copy = {
-  appName: "CTX",
+  appName: "Docs",
   navigationDocuments: "我的文档",
   navigationSquare: "广场",
   navigationPersonalPage: "个人主页",
@@ -537,7 +537,7 @@ const chineseCopy: Copy = {
   translationInProgressTitle: "译文正在准备",
   translationInProgress: "当前显示原文；所选语言的文章和元信息正在后台生成。",
   squareTitle: "广场",
-  squareDescription: "所有使用 CTX 写作者已经发布的 Markdown 文章。",
+  squareDescription: "所有使用 Docs 写作者已经发布的 Markdown 文章。",
   squareEmptyTitle: "还没有文章发布",
   squareEmptyDescription: "任何人发布文档后，它都会出现在这里，供所有人阅读。",
   startWriting: "开始写作",
@@ -545,22 +545,22 @@ const chineseCopy: Copy = {
   backToSquare: "返回广场",
   publishedDocumentNotFound: "未找到已发布的文档",
   rootConfigured: "根管理员已配置",
-  initializeTitle: "初始化 CTX",
+  initializeTitle: "初始化 Docs",
   initializeDescription:
-    "第一位完成认证的 Auth Mini 用户将成为 CTX 根管理员。登录仍由 Auth Mini 负责。",
+    "第一位完成认证的 Auth Mini 用户将成为 Docs 根管理员。登录仍由 Auth Mini 负责。",
   becomeRoot: "成为根管理员",
   aiConfigurationSaved: "AI 配置已保存",
   administrationDescription: "实例级控制与写作和发布保持分离。",
   openAiRouting: "OpenAI 路由",
   openAiRoutingDescription:
-    "CTX 调用兼容 OpenAI 的 Responses API。API 密钥在此主机上加密，绝不会返回浏览器。",
+    "Docs 调用兼容 OpenAI 的 Responses API。API 密钥在此主机上加密，绝不会返回浏览器。",
   configured: "已配置",
   needsKey: "需要密钥",
   baseUrl: "基础 URL",
   model: "模型",
   apiKey: "API 密钥",
   apiKeyPlaceholder: "留空即可保留已加密的密钥",
-  apiKeyDescription: "只有根管理员可以更新此密钥。CTX 不会将其返回。",
+  apiKeyDescription: "只有根管理员可以更新此密钥。Docs 不会将其返回。",
   saveAiConfiguration: "保存 AI 配置",
   testAiConfiguration: "测试配置",
   aiConfigurationTestSucceeded: "AI 配置测试成功",
@@ -578,14 +578,14 @@ const chineseCopy: Copy = {
   aiRequestError: "错误",
   aiRequestsEmpty: "尚未记录自动 AI 请求。",
   systemResourcesDescription:
-    "每 5 秒采集一次 CTX 进程、存储和所在主机的资源快照。",
+    "每 5 秒采集一次 Docs 进程、存储和所在主机的资源快照。",
   systemResourcesRefreshes: "每 {seconds} 秒刷新",
   systemResourcesSampledAt: "采样时间 {date}",
   systemResourceCpu: "CPU",
   systemResourceLoad1m: "1 分钟负载",
   systemResourceLogicalCpus: "逻辑 CPU",
   systemResourceMemory: "内存",
-  systemResourceProcessMemory: "CTX 进程",
+  systemResourceProcessMemory: "Docs 进程",
   systemResourceOtherMemory: "其他系统",
   systemResourceAvailableMemory: "可用",
   systemResourceSwap: "交换空间",
@@ -701,7 +701,7 @@ const chineseCopy: Copy = {
   inlineComment: "划线评论",
   fullComment: "全文评论",
   commentPosted: "评论已发布",
-  requestFailed: "CTX 无法完成此请求",
+  requestFailed: "Docs 无法完成此请求",
 }
 
 const copy: Record<Locale, Copy> = {

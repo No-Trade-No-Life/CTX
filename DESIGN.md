@@ -1,4 +1,4 @@
-# CTX Design System
+# Docs Design System
 
 ## Scene and strategy
 
@@ -28,14 +28,14 @@ Geist is the UI face. The editing canvas uses a measured 16px body and a 72ch pr
 
 ## Logo
 
-`web/public/ctx-mark.svg` is the shared, transparent 1:1 brand mark and
-favicon. It depicts one crossing X: two diagonal strokes in a single 9/64
-round-capped stroke, the same stroke family as the Cybion triangle and the
-NormAI circle. Its 64 × 64 viewBox keeps the silhouette legible at favicon
-sizes without relying on lettering or thin strokes.
+`web/public/docs-mark.svg` is the shared, transparent 1:1 brand mark and
+favicon. It depicts a single D: a vertical stem closed by a half-round bowl,
+drawn as one 8/64 round-capped stroke, the same stroke family as the Cybion
+triangle and the NormAI circle. Its 64 × 64 viewBox keeps the silhouette
+legible at favicon sizes without relying on lettering or thin strokes.
 
-Both sidebar headers render an inline `CtxMark` component at 32 × 32 px
-alongside the semibold product name CTX; collapsed rails show only the mark at
+Both sidebar headers render an inline `DocsMark` component at 32 × 32 px
+alongside the semibold product name Docs; collapsed rails show only the mark at
 28 × 28 px. The component draws in `currentColor`, so the mark follows the
 active theme, including manual theme switches and the existing `D` shortcut.
 

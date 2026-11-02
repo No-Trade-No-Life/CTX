@@ -2099,7 +2099,7 @@ fn add_ai_request_openai_lb_request_id_if_needed(
 }
 
 fn migrate_legacy_context_schema(connection: &mut Connection) -> Result<(), DatabaseError> {
-    // COMPATIBILITY: CTX 0.1 stored documents below contexts. This runs only for databases
+    // COMPATIBILITY: the 0.1 release stored documents below contexts. This runs only for databases
     // without documents.owner_id. Remove after every supported deployed database has been
     // upgraded; verify with PRAGMA table_info(documents) before removing this path.
     if !table_exists(connection, "documents")?
@@ -2697,7 +2697,7 @@ mod tests {
             description: description.to_owned(),
             summary: format!("{description} summary"),
             short_summary: description.to_owned(),
-            tags: vec!["CTX".to_owned()],
+            tags: vec!["Docs".to_owned()],
             inferred_date: String::new(),
             inferred_lang: language.to_owned(),
             key_points: vec![description.to_owned()],

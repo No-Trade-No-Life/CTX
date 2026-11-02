@@ -14,11 +14,11 @@ pub struct Cipher {
 
 #[derive(Debug, Error)]
 pub enum CipherError {
-    #[error("failed to read the CTX encryption key")]
+    #[error("failed to read the Docs encryption key")]
     Read(#[source] std::io::Error),
-    #[error("failed to write the CTX encryption key")]
+    #[error("failed to write the Docs encryption key")]
     Write(#[source] std::io::Error),
-    #[error("the CTX encryption key is malformed")]
+    #[error("the Docs encryption key is malformed")]
     MalformedKey,
     #[error("encrypted value is malformed")]
     MalformedCiphertext,

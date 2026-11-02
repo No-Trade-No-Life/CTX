@@ -240,7 +240,7 @@ pub async fn run_flusher(database: Database, counter: Arc<ViewCounter>) {
         }
         if let Err(error) = database.apply_view_deltas(&deltas) {
             let documents = deltas.len();
-            eprintln!("CTX could not persist view counts for {documents} documents: {error}");
+            eprintln!("Docs could not persist view counts for {documents} documents: {error}");
             counter.restore(deltas);
         }
     }

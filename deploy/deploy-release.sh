@@ -35,7 +35,7 @@ PY
   fi
   test -s "$backup"
   database_backup="$backup"
-  printf 'Backed up CTX database to %s\n' "$backup"
+  printf 'Backed up the Docs database to %s\n' "$backup"
 }
 
 rollback_release() {
@@ -45,28 +45,28 @@ rollback_release() {
     exit "$status"
   fi
   set +e
-  printf 'CTX release failed; restoring the previous release and database backup.\n' >&2
+  printf 'Docs release failed; restoring the previous release and database backup.\n' >&2
   if ! systemctl stop ctx.service; then
-    printf 'Rollback failed: could not stop CTX before restoring its database.\n' >&2
+    printf 'Rollback failed: could not stop Docs before restoring its database.\n' >&2
     exit "$status"
   fi
   if [ -n "$database_backup" ]; then
     if ! install -o ctx -g ctx -m 0600 "$database_backup" /var/lib/ctx/.ctx/ctx.sqlite3; then
-      printf 'Rollback failed: could not restore the CTX database backup.\n' >&2
+      printf 'Rollback failed: could not restore the Docs database backup.\n' >&2
       exit "$status"
     fi
     if ! rm -f /var/lib/ctx/.ctx/ctx.sqlite3-wal /var/lib/ctx/.ctx/ctx.sqlite3-shm; then
-      printf 'Rollback failed: could not clear CTX WAL files after restoring the database.\n' >&2
+      printf 'Rollback failed: could not clear Docs WAL files after restoring the database.\n' >&2
       exit "$status"
     fi
   fi
   if [ -n "$previous_release" ]; then
     if ! ln -sfn "$previous_release" /opt/ctx/current; then
-      printf 'Rollback failed: could not restore the previous CTX release link.\n' >&2
+      printf 'Rollback failed: could not restore the previous Docs release link.\n' >&2
       exit "$status"
     fi
     if ! systemctl start ctx.service; then
-      printf 'Rollback failed: could not restart the previous CTX release.\n' >&2
+      printf 'Rollback failed: could not restart the previous Docs release.\n' >&2
       exit "$status"
     fi
   fi

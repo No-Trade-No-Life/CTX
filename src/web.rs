@@ -103,7 +103,7 @@ fn hash_secret(value: &str) -> String {
 }
 
 const MAX_IMAGE_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
-const PUBLIC_MEDIA_BASE_URL: &str = "https://ctx.ntnl.io/media";
+const PUBLIC_MEDIA_BASE_URL: &str = "https://docs.ntnl.io/media";
 
 #[derive(RustEmbed)]
 #[folder = "web/dist/"]
@@ -1158,6 +1158,7 @@ mod tests {
         source_language_or_und, static_asset, store_media, validate_ai_base_url,
     };
     use crate::{
+        AUTH_AUDIENCE,
         db::{CreateDocumentOutcome, Database, DocumentViewStats, NewDocument},
         resources::ResourceMonitor,
         views::ViewCounter,
@@ -1197,7 +1198,7 @@ mod tests {
     fn test_auth_verifier() -> auth_mini_axum::AuthMiniVerifier {
         auth_mini_axum::AuthMiniVerifier::from_issuer_background(
             "https://auth.ntnl.io",
-            "ctx.ntnl.io".to_owned(),
+            AUTH_AUDIENCE.to_owned(),
             auth_mini_axum::JwksCachePolicy::default(),
         )
         .unwrap()
