@@ -7,7 +7,7 @@ use worker::*;
 use crate::models::{
     ApiKey, Document, DocumentComment, DocumentDetail, DocumentMove, DocumentReader, DocumentRevision,
     DocumentSave, DocumentViewStats, MoveDocumentOutcome, NewDocument, NewDocumentComment,
-    PublicDocumentDetail, PublicDocumentSummary, PublicUserProfile, PublishedMetadata,
+    AiRequest, PublicDocumentDetail, PublicDocumentSummary, PublicUserProfile, PublishedMetadata,
 };
 
 pub fn now() -> i64 {
@@ -530,6 +530,157 @@ impl Db {
             })).collect::<Vec<_>>()
         }))
     }
+}
+
+impl Db {
+    pub async fn ai_config(&self) -> Result<Option<crate::ai::AiConfig>> {
+        #[derive(Deserialize)]
+        struct M { key: String, value: String }
+        let rows: Vec<M> = self
+            .all("SELECT key, value FROM app_meta WHERE key IN ('ai_base_url', 'ai_model', 'ai_api_key')", vec![])
+            .await?;
+        let mut base_url = String::new();
+        let mut model = String::new();
+        let mut api_key = String::new();
+        for row in rows {
+            match row.key.as_str() {
+                "ai_base_url" => base_url = row.value,
+                "ai_model" => model = row.value,
+                "ai_api_key" => api_key = row.value,
+                _ => {}
+            }
+        }
+        if base_url.trim().is_empty() || model.trim().is_empty() || api_key.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(crate::ai::AiConfig { base_url, model, api_key }))
+    }
+
+    pub async fn save_ai_config(&self, base_url: &str, model: &str, api_key: Option<&str>) -> Result<()> {
+        for (key, value) in [("ai_base_url", base_url), ("ai_model", model)] {
+            self.run(
+                "INSERT INTO app_meta(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                vec![jstr(key), jstr(value)],
+            )
+            .await?;
+        }
+        if let Some(api_key) = api_key {
+            if !api_key.trim().is_empty() {
+                self.run(
+                    "INSERT INTO app_meta(key, value) VALUES ('ai_api_key', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1",
+                    vec![jstr(api_key)],
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn enqueue_ai_task(&self, document_id: &str, revision_id: &str, task: &str, language: &str) -> Result<()> {
+        self.run(
+            "INSERT INTO ai_requests(id, document_id, source_revision_id, task, target_language, status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6) ON CONFLICT(document_id, source_revision_id, task, target_language) DO UPDATE SET status = 'queued', result_summary = NULL, error = NULL, openai_lb_request_id = NULL, started_at = NULL, completed_at = NULL WHERE ai_requests.status = 'failed'",
+            vec![
+                jstr(&uuid::Uuid::new_v4().to_string()),
+                jstr(document_id),
+                jstr(revision_id),
+                jstr(task),
+                jstr(language),
+                JsValue::from_f64(now() as f64),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn claim_next_ai_request(&self) -> Result<Option<AiRequest>> {
+        let rows: Vec<AiRequest> = self
+            .all(
+                "UPDATE ai_requests SET status = 'running', started_at = ?2 WHERE id = (
+                     SELECT id FROM ai_requests WHERE status = 'queued' ORDER BY created_at, id LIMIT 1
+                 ) AND status = 'queued'
+                 RETURNING id, document_id, COALESCE((SELECT title FROM documents WHERE id = ai_requests.document_id), '') AS document_title, source_revision_id, task, target_language, status, result_summary, error, openai_lb_request_id, created_at, started_at, completed_at",
+                vec![JsValue::NULL, JsValue::from_f64(now() as f64)],
+            )
+            .await?;
+        Ok(rows.into_iter().next())
+    }
+
+    pub async fn ai_request(&self, id: &str) -> Result<Option<AiRequest>> {
+        self.first(
+            "SELECT id, document_id, COALESCE((SELECT title FROM documents WHERE id = ai_requests.document_id), '') AS document_title, source_revision_id, task, target_language, status, result_summary, error, openai_lb_request_id, created_at, started_at, completed_at FROM ai_requests WHERE id = ?1",
+            vec![jstr(id)],
+        )
+        .await
+    }
+
+    pub async fn complete_ai_request(&self, id: &str, summary: &str) -> Result<()> {
+        self.run(
+            "UPDATE ai_requests SET status = 'succeeded', result_summary = ?2, completed_at = ?3 WHERE id = ?1",
+            vec![jstr(id), jstr(summary), JsValue::from_f64(now() as f64)],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn fail_ai_request(&self, id: &str, error: &str) -> Result<()> {
+        let error: String = error.chars().take(800).collect();
+        self.run(
+            "UPDATE ai_requests SET status = 'failed', error = ?2, completed_at = ?3 WHERE id = ?1",
+            vec![jstr(id), jstr(&error), JsValue::from_f64(now() as f64)],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn published_revision(&self, document_id: &str, revision_id: &str) -> Result<Option<AiDocument>> {
+        self.first(
+            "SELECT d.title AS title, r.content AS content, COALESCE(d.published_source_language, d.source_language, 'und') AS source_language FROM documents d JOIN document_revisions r ON r.id = ?2 WHERE d.id = ?1 AND d.published_revision_id = ?2",
+            vec![jstr(document_id), jstr(revision_id)],
+        )
+        .await
+    }
+
+    pub async fn apply_ai_metadata(&self, document_id: &str, revision_id: &str, language: &str, metadata_json: &str) -> Result<bool> {
+        let changed = self.run(
+            "UPDATE documents SET source_language = ?3, published_source_language = ?3, metadata_json = ?4, updated_at = ?5 WHERE id = ?1 AND published_revision_id = ?2",
+            vec![jstr(document_id), jstr(revision_id), jstr(language), jstr(metadata_json), JsValue::from_f64(now() as f64)],
+        )
+        .await?;
+        if changed == 0 { return Ok(false); }
+        self.run(
+            "INSERT INTO document_metadata(document_id, language, source_revision_id, metadata_json, published_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(document_id, language) DO UPDATE SET source_revision_id = ?3, metadata_json = ?4, published_at = ?5",
+            vec![jstr(document_id), jstr(language), jstr(revision_id), jstr(metadata_json), JsValue::from_f64(now() as f64)],
+        )
+        .await?;
+        Ok(true)
+    }
+
+    pub async fn apply_ai_translation(&self, document_id: &str, revision_id: &str, language: &str, title: &str, content: &str) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct R { published_revision_id: Option<String> }
+        let row: Option<R> = self
+            .first("SELECT published_revision_id FROM documents WHERE id = ?1", vec![jstr(document_id)])
+            .await?;
+        if row.and_then(|r| r.published_revision_id).as_deref() != Some(revision_id) {
+            return Ok(false);
+        }
+        self.run(
+            "INSERT INTO document_translations(document_id, language, source_revision_id, title, content, published_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(document_id, language) DO UPDATE SET source_revision_id = ?3, title = ?4, content = ?5, published_at = ?6",
+            vec![jstr(document_id), jstr(language), jstr(revision_id), jstr(title), jstr(content), JsValue::from_f64(now() as f64)],
+        )
+        .await?;
+        Ok(true)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct AiDocument {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub source_language: String,
 }
 
 pub fn metadata_from_json(value: &str) -> PublishedMetadata {

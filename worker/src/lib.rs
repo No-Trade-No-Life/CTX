@@ -1,3 +1,4 @@
+mod ai;
 mod auth;
 mod db;
 mod http;
@@ -30,4 +31,27 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
 }
 
 #[event(scheduled)]
-async fn scheduled(_event: ScheduledEvent, _env: Env, _ctx: ScheduleContext) {}
+async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    let Ok(db) = db::Db::new(&env) else { return };
+    for _ in 0..3 {
+        let Ok(Some(request)) = db.claim_next_ai_request().await else { break };
+        match ai::process(&db, &request.id).await {
+            Ok(outcome) => {
+                if let Some((language, metadata)) = outcome.metadata {
+                    let _ = db
+                        .apply_ai_metadata(&request.document_id, &request.source_revision_id, &language, &serde_json::to_string(&metadata).unwrap_or_default())
+                        .await;
+                }
+                if let Some((language, title, content)) = outcome.translation {
+                    let _ = db
+                        .apply_ai_translation(&request.document_id, &request.source_revision_id, &language, &title, &content)
+                        .await;
+                }
+                let _ = db.complete_ai_request(&request.id, &outcome.summary).await;
+            }
+            Err(error) => {
+                let _ = db.fail_ai_request(&request.id, &error).await;
+            }
+        }
+    }
+}
