@@ -188,13 +188,96 @@ impl Db {
                 vec![],
             )
             .await?;
+        if publications.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 一次性批量取回所有已发布版本的翻译标题、元数据与 AI 状态，避免逐篇 N+1 往返。
+        let revisions: Vec<String> = publications.iter().map(|p| p.source_revision_id.clone()).collect();
+        let mut translated_titles: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+        let mut metadata_rows: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+        let mut request_status: std::collections::HashMap<(String, String, String), String> = std::collections::HashMap::new();
+
+        for chunk in revisions.chunks(50) {
+            let placeholders = (1..=chunk.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+            let params = || chunk.iter().map(|r| jstr(r)).collect::<Vec<JsValue>>();
+
+            #[derive(Deserialize)]
+            struct T { document_id: String, language: String, title: String }
+            let rows: Vec<T> = self
+                .all(
+                    &format!("SELECT document_id, language, title FROM document_translations WHERE source_revision_id IN ({placeholders})"),
+                    params(),
+                )
+                .await?;
+            for row in rows {
+                translated_titles.insert((row.document_id, row.language), row.title);
+            }
+
+            #[derive(Deserialize)]
+            struct M { document_id: String, language: String, metadata_json: String }
+            let rows: Vec<M> = self
+                .all(
+                    &format!("SELECT document_id, language, metadata_json FROM document_metadata WHERE source_revision_id IN ({placeholders})"),
+                    params(),
+                )
+                .await?;
+            for row in rows {
+                metadata_rows.insert((row.document_id, row.language), row.metadata_json);
+            }
+
+            #[derive(Deserialize)]
+            struct S { document_id: String, task: String, target_language: String, status: String }
+            let rows: Vec<S> = self
+                .all(
+                    &format!("SELECT document_id, task, target_language, status FROM ai_requests WHERE source_revision_id IN ({placeholders}) ORDER BY created_at"),
+                    params(),
+                )
+                .await?;
+            for row in rows {
+                if row.status != "succeeded" {
+                    request_status.insert((row.document_id, row.task, row.target_language), row.status);
+                }
+            }
+        }
+
         let mut summaries = Vec::with_capacity(publications.len());
         for p in &publications {
-            summaries.push(self.summary(p, language).await?);
+            let target = language.filter(|l| *l != p.source_language);
+            let translated_title = target.and_then(|l| translated_titles.get(&(p.id.clone(), l.to_owned())).cloned());
+            let has_metadata = target.is_some_and(|l| metadata_rows.contains_key(&(p.id.clone(), l.to_owned())));
+            let (title, language) = match (translated_title, has_metadata) {
+                (Some(title), true) => (title, target.unwrap_or_default().to_owned()),
+                _ => (p.title.clone(), p.source_language.clone()),
+            };
+            let (metadata, is_metadata_fallback) = match metadata_rows.get(&(p.id.clone(), language.clone())) {
+                Some(json) => (metadata_from_json(json), false),
+                None if language == p.source_language => (PublishedMetadata::default(), false),
+                None => {
+                    let source = metadata_rows.get(&(p.id.clone(), p.source_language.clone()));
+                    (source.map(|json| metadata_from_json(json)).unwrap_or_default(), true)
+                }
+            };
+            let metadata_status = if metadata.is_empty() {
+                request_status.get(&(p.id.clone(), "metadata".to_owned(), String::new())).cloned()
+            } else {
+                None
+            };
+            summaries.push(PublicDocumentSummary {
+                id: p.id.clone(),
+                owner_id: p.owner_id.clone(),
+                title,
+                metadata,
+                language,
+                is_metadata_fallback,
+                metadata_status,
+                published_at: p.published_at,
+            });
         }
         Ok(summaries)
     }
 
+    #[allow(dead_code)]
     async fn summary(&self, p: &PublicationRow, requested: Option<&str>) -> Result<PublicDocumentSummary> {
         let target = requested.filter(|l| *l != p.source_language);
         let translated = match target {
@@ -419,7 +502,19 @@ impl Db {
         }
         let rows: Vec<P> = self
             .all(
-                "SELECT route, COUNT(*) AS requests, AVG(duration_ms) AS avg_ms, MAX(duration_ms) AS p95_ms, MAX(duration_ms) AS p50_ms, SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors FROM request_metrics WHERE created_at >= ?1 GROUP BY route ORDER BY requests DESC LIMIT 40",
+                "WITH windowed AS (
+                    SELECT route, status, duration_ms,
+                           ROW_NUMBER() OVER (PARTITION BY route ORDER BY duration_ms) AS rn,
+                           COUNT(*) OVER (PARTITION BY route) AS total
+                    FROM request_metrics WHERE created_at >= ?1
+                 )
+                 SELECT route,
+                        COUNT(*) AS requests,
+                        AVG(duration_ms) AS avg_ms,
+                        MAX(CASE WHEN rn = (total + 1) / 2 THEN duration_ms END) AS p50_ms,
+                        MAX(CASE WHEN rn = (total * 95 + 99) / 100 THEN duration_ms END) AS p95_ms,
+                        SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS errors
+                 FROM windowed GROUP BY route ORDER BY requests DESC LIMIT 40",
                 vec![JsValue::from_f64((now() - 86_400) as f64)],
             )
             .await?;

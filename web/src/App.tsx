@@ -15,20 +15,16 @@ import {
   CalendarClockIcon,
   CopyIcon,
   CornerDownRightIcon,
-  CpuIcon,
-  DatabaseIcon,
   ExternalLinkIcon,
   EyeIcon,
   FileTextIcon,
   Globe2Icon,
-  HardDriveIcon,
+  GaugeIcon,
   KeyRoundIcon,
   LanguagesIcon,
   LoaderCircleIcon,
   LockIcon,
-  MemoryStickIcon,
   MessageSquareIcon,
-  NetworkIcon,
   PencilIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -39,7 +35,6 @@ import {
   Trash2Icon,
   UserRoundIcon,
   XIcon,
-  type LucideIcon,
 } from "lucide-react"
 import {
   Navigate,
@@ -90,7 +85,6 @@ import type {
   PublicationTime,
   SchwartzValue,
   SummaryEvidence,
-  SystemResources,
 } from "./lib/types"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -207,7 +201,7 @@ type NavigationCopy = (
     | "navigationApiKeys"
     | "navigationAdministration"
     | "navigationAiRequests"
-    | "navigationSystemResources"
+    | "navigationPerformance"
 ) => string
 
 function contentNavItems(
@@ -260,9 +254,9 @@ function administrationNavItems(t: NavigationCopy): AppNavItem[] {
       icon: <SparklesIcon />,
     },
     {
-      to: "/admin/system-resources",
-      label: t("navigationSystemResources"),
-      icon: <HardDriveIcon />,
+      to: "/admin/performance",
+      label: t("navigationPerformance"),
+      icon: <GaugeIcon />,
     },
   ]
 }
@@ -412,10 +406,10 @@ function DocsShell({ auth }: { auth: AuthSdk }) {
             }
           />
           <Route
-            path="/admin/system-resources"
+            path="/admin/performance"
             element={
               me.data.is_root ? (
-                <SystemResourcesPage auth={auth} />
+                <PerformancePage />
               ) : (
                 <Navigate to="/documents" replace />
               )
@@ -3730,151 +3724,110 @@ function ApiKeysPage({ auth }: { auth: AuthSdk }) {
   )
 }
 
-function SystemResourcesPage({ auth }: { auth: AuthSdk }) {
-  const { locale, t } = useI18n()
-  const resources = useQuery({
-    queryKey: ["admin-system-resources"],
-    queryFn: () =>
-      request<SystemResources>("/api/v1/admin/system-resources", auth),
-    refetchInterval: 5_000,
+function PerformancePage() {
+  const { t } = useI18n()
+  const [stored, setStored] = useState(
+    () => window.localStorage.getItem("docs.admin-token") ?? ""
+  )
+  const [draft, setDraft] = useState(stored)
+  const performance = useQuery({
+    queryKey: ["admin-performance", stored],
+    queryFn: async () => {
+      const response = await fetch("/api/v1/admin/performance", {
+        headers: { authorization: `Bearer ${stored}` },
+      })
+      if (response.status === 401) throw new Error(t("performanceUnauthorized"))
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+      return (await response.json()) as RoutePerformance
+    },
+    enabled: stored.length > 0,
   })
-
-  if (resources.isPending) return <SystemResourcesSkeleton />
-  if (resources.error || !resources.data)
-    return (
-      <PageError error={resources.error ?? new Error(t("requestFailed"))} />
-    )
-
-  const data = resources.data
-  const metrics: Array<{
-    icon: LucideIcon
-    label: string
-    value: string
-    detail: string
-    secondaryDetail?: string
-    percentage?: number
-  }> = [
-    {
-      icon: CpuIcon,
-      label: t("systemResourceCpu"),
-      value: formatPercentage(data.cpu.usage_percent, locale),
-      detail: `${t("systemResourceLoad1m")}: ${data.cpu.load_1m.toFixed(2)} · ${t("systemResourceLogicalCpus")}: ${data.cpu.logical_cpus}`,
-      percentage: data.cpu.usage_percent,
-    },
-    {
-      icon: MemoryStickIcon,
-      label: t("systemResourceMemory"),
-      value: `${formatBytes(data.memory.used_bytes, locale)} / ${formatBytes(data.memory.total_bytes, locale)}`,
-      detail: `${t("systemResourceProcessMemory")}: ${formatBytes(data.memory.process_used_bytes, locale)} · ${t("systemResourceOtherMemory")}: ${formatBytes(data.memory.other_used_bytes, locale)}`,
-      secondaryDetail: `${t("systemResourceAvailableMemory")}: ${formatBytes(data.memory.available_bytes, locale)} · ${t("systemResourceSwap")}: ${formatBytes(data.memory.swap_used_bytes, locale)} / ${formatBytes(data.memory.swap_total_bytes, locale)}`,
-      percentage: data.memory.usage_percent,
-    },
-    {
-      icon: NetworkIcon,
-      label: t("systemResourceNetwork"),
-      value: `${t("systemResourceReceived")}: ${formatRate(data.network.receive_bytes_per_second, locale)} · ${t("systemResourceTransmitted")}: ${formatRate(data.network.transmit_bytes_per_second, locale)}`,
-      detail: `${t("systemResourceNetworkInterfaces")}: ${data.network.interfaces}`,
-    },
-    {
-      icon: HardDriveIcon,
-      label: t("systemResourceDisk"),
-      value: data.disk
-        ? `${formatBytes(data.disk.used_bytes, locale)} / ${formatBytes(data.disk.total_bytes, locale)}`
-        : "—",
-      detail: data.disk
-        ? `${t("systemResourceAvailableDisk")}: ${formatBytes(data.disk.available_bytes, locale)} · ${t("systemResourceMountPoint")}: ${data.disk.mount_point}`
-        : t("systemResourceUnavailable"),
-      percentage: data.disk?.usage_percent,
-    },
-    {
-      icon: DatabaseIcon,
-      label: t("systemResourceSqlite"),
-      value: formatBytes(data.sqlite.total_bytes, locale),
-      detail: `${t("systemResourceMainFile")}: ${formatBytes(data.sqlite.main_bytes, locale)} · ${t("systemResourceWalFile")}: ${formatBytes(data.sqlite.wal_bytes, locale)} · ${t("systemResourceShmFile")}: ${formatBytes(data.sqlite.shm_bytes, locale)}`,
-      secondaryDetail: `${t("systemResourceReclaimable")}: ${formatBytes(data.sqlite.freelist_bytes, locale)} · ${formatPercentage(data.sqlite.freelist_percent, locale)}`,
-    },
-  ]
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 p-4 md:p-6">
       <section className="max-w-2xl">
         <h1 className="text-2xl font-semibold tracking-tight text-balance">
-          {t("pageTitleSystemResources")}
+          {t("pageTitlePerformance")}
         </h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          {t("systemResourcesDescription")}
+          {t("performanceDescription")}
         </p>
-        <p className="mt-3 text-xs text-muted-foreground">
-          {t("systemResourcesRefreshes").replace("{seconds}", "5")} ·{" "}
-          {t("systemResourcesSampledAt").replace(
-            "{date}",
-            formatDateTime(data.sampled_at, locale)
-          )}
-        </p>
+        <form
+          className="mt-4 flex flex-wrap items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const next = draft.trim()
+            if (next) window.localStorage.setItem("docs.admin-token", next)
+            else window.localStorage.removeItem("docs.admin-token")
+            setStored(next)
+          }}
+        >
+          <label className="flex min-w-64 flex-1 flex-col gap-1 text-xs text-muted-foreground">
+            {t("performanceToken")}
+            <input
+              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-foreground outline-none focus-visible:border-ring"
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="ADMIN_TOKEN"
+              type="password"
+              value={draft}
+            />
+          </label>
+          <Button type="submit" variant="outline">
+            {t("performanceLoad")}
+          </Button>
+        </form>
+        <p className="mt-2 text-xs text-muted-foreground">{t("performanceTokenHint")}</p>
       </section>
-      <section
-        aria-label={t("pageTitleSystemResources")}
-        className="grid gap-3 md:grid-cols-2 xl:grid-cols-3"
-      >
-        {metrics.map((metric) => (
-          <Card key={metric.label} className="shadow-none">
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-sm font-medium">
-                <metric.icon className="size-4 text-muted-foreground" />
-                {metric.label}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold tracking-tight tabular-nums">
-                {metric.value}
-              </p>
-              <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                {metric.detail}
-              </p>
-              {metric.secondaryDetail ? (
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  {metric.secondaryDetail}
-                </p>
-              ) : null}
-              {metric.percentage === undefined ? null : (
-                <div
-                  className="mt-4 h-1.5 overflow-hidden rounded-full bg-muted"
-                  role="progressbar"
-                  aria-label={metric.label}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(metric.percentage)}
-                >
-                  <div
-                    className="h-full rounded-full bg-primary transition-[width] duration-200"
-                    style={{
-                      width: `${Math.min(Math.max(metric.percentage, 0), 100)}%`,
-                    }}
-                  />
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ))}
-      </section>
+      {stored.length === 0 ? null : performance.isPending ? (
+        <Skeleton className="h-64 rounded-lg" />
+      ) : performance.error ? (
+        <PageError error={performance.error} />
+      ) : !performance.data || performance.data.routes.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{t("performanceEmpty")}</p>
+      ) : (
+        <Card className="shadow-none">
+          <CardContent className="overflow-x-auto p-0">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs text-muted-foreground">
+                <tr className="border-b">
+                  <th className="px-4 py-3 font-medium">Route</th>
+                  <th className="px-4 py-3 text-right font-medium">{t("performanceRequests")}</th>
+                  <th className="px-4 py-3 text-right font-medium">{t("performanceAverage")}</th>
+                  <th className="px-4 py-3 text-right font-medium">{t("performanceP50")}</th>
+                  <th className="px-4 py-3 text-right font-medium">{t("performanceP95")}</th>
+                  <th className="px-4 py-3 text-right font-medium">{t("performanceErrors")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {performance.data.routes.map((row) => (
+                  <tr key={row.route} className="border-b last:border-0">
+                    <td className="px-4 py-3 font-mono text-xs">{row.route}</td>
+                    <td className="px-4 py-3 text-right tabular-nums">{row.requests}</td>
+                    <td className="px-4 py-3 text-right tabular-nums">{row.avg_ms.toFixed(0)} ms</td>
+                    <td className="px-4 py-3 text-right tabular-nums">{row.p50_ms.toFixed(0)} ms</td>
+                    <td className="px-4 py-3 text-right tabular-nums">{row.p95_ms.toFixed(0)} ms</td>
+                    <td className="px-4 py-3 text-right tabular-nums">{row.errors}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
     </main>
   )
 }
 
-function SystemResourcesSkeleton() {
-  return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 p-4 md:p-6">
-      <section className="max-w-2xl space-y-3">
-        <Skeleton className="h-8 w-48" />
-        <Skeleton className="h-5 w-full" />
-      </section>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {Array.from({ length: 5 }, (_, index) => (
-          <Skeleton key={index} className="h-52 rounded-lg" />
-        ))}
-      </div>
-    </main>
-  )
+type RoutePerformance = {
+  window_seconds: number
+  routes: {
+    route: string
+    requests: number
+    avg_ms: number
+    p50_ms: number
+    p95_ms: number
+    errors: number
+  }[]
 }
 
 function AdministrationPage({ auth }: { auth: AuthSdk }) {
@@ -4274,27 +4227,6 @@ function useBrowserTitle(title?: string) {
   }, [title])
 }
 
-function formatBytes(bytes: number, locale: Locale) {
-  const units = ["B", "KB", "MB", "GB", "TB"]
-  let value = bytes
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value)} ${units[unit]}`
-}
-
-function formatRate(bytes: number, locale: Locale) {
-  return `${formatBytes(bytes, locale)}/s`
-}
-
-function formatPercentage(value: number, locale: Locale) {
-  return new Intl.NumberFormat(locale, {
-    maximumFractionDigits: 1,
-    style: "percent",
-  }).format(value / 100)
-}
 
 function pageTitle(
   pathname: string,
@@ -4304,13 +4236,12 @@ function pageTitle(
       | "pageTitleDocuments"
       | "pageTitleEditor"
       | "pageTitleAiRequests"
-      | "pageTitleSystemResources"
+      | "pageTitlePerformance"
       | "pageTitleApiKeys"
   ) => string
 ) {
   if (pathname === "/settings/api-keys") return t("pageTitleApiKeys")
-  if (pathname === "/admin/system-resources")
-    return t("pageTitleSystemResources")
+  if (pathname === "/admin/performance") return t("pageTitlePerformance")
   if (pathname === "/admin/ai-requests") return t("pageTitleAiRequests")
   if (pathname === "/admin") return t("pageTitleAdministration")
   if (pathname.startsWith("/documents/") && pathname !== "/documents")

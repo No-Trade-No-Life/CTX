@@ -155,9 +155,6 @@ async fn dispatch(req: &mut Request, env: &Env, path: &str, method: &str, url: &
             return json(&db.public_user_profile(owner_id, language.as_deref()).await?);
         }
     }
-    if let Some(rest) = path.strip_prefix("/api/v1/") {
-        return private(req, env, &db, rest, method, url).await;
-    }
     if path == "/api/v1/admin/performance" {
         let provided = req
             .headers()
@@ -170,6 +167,9 @@ async fn dispatch(req: &mut Request, env: &Env, path: &str, method: &str, url: &
             return Err(ApiError::Unauthorized("invalid or expired bearer token".to_owned()));
         }
         return json(&db.route_performance().await?);
+    }
+    if let Some(rest) = path.strip_prefix("/api/v1/") {
+        return private(req, env, &db, rest, method, url).await;
     }
     Err(ApiError::NotFound)
 }
