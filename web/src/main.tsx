@@ -17,6 +17,12 @@ const queryClient = new QueryClient({
 // while the viewer is signed out, Linkit falls back to the browser language.
 const fallbackLanguage = localeFor(window.navigator.language)
 
+// "ctx.ntnl.io" stays first: it is the Auth Mini audience identifier Docs
+// requests, and credentials issued before the rename still carry it. The SDK
+// additionally requires the current hostname to appear in the list, so the
+// new hostname has to be declared here or sign-in throws before redirecting.
+const AUTH_AUDIENCES = ["ctx.ntnl.io", "linkit.ntnl.io", window.location.hostname]
+
 function RouteBoundary() {
   const location = useLocation()
 
@@ -32,7 +38,7 @@ function RouteBoundary() {
       // validate.
       <AuthMiniProvider
         authMiniBaseUrl="https://auth.ntnl.io"
-        audiences={["ctx.ntnl.io", "linkit.ntnl.io"]}
+        audiences={AUTH_AUDIENCES}
         autoRedirectToLogin={false}
       >
         <LinkitProvider
@@ -49,7 +55,7 @@ function RouteBoundary() {
   return (
     <AuthMiniProvider
       authMiniBaseUrl="https://auth.ntnl.io"
-      audiences={["ctx.ntnl.io", "linkit.ntnl.io"]}
+      audiences={AUTH_AUDIENCES}
       autoRedirectToLogin
     >
       <LinkitProvider

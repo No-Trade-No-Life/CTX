@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "docs",
+  "main": "build/worker/shim.mjs",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "docs.ntnl.io/*", "zone_name": "ntnl.io" }
+  ],
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api", "/api/*", "/media", "/media/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "docs-db",
+      "database_id": "fdfecddc-bd7c-4176-bf59-b419d8abcfac",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "docs-media" }],
+  "vars": {
+    "AUTH_ISSUER": "https://auth.ntnl.io",
+    "AUTH_AUDIENCE": "ctx.ntnl.io",
+    "MEDIA_BASE_URL": "https://docs.ntnl.io/media"
+  },
+  "triggers": { "crons": ["*/1 * * * *"] },
+  "observability": { "enabled": true }
+}
