@@ -243,6 +243,21 @@ struct MoveInput {
 }
 
 #[derive(Deserialize)]
+struct AiTaskInput {
+    task: String,
+    #[serde(default)]
+    target_language: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AiConfigInput {
+    base_url: String,
+    model: String,
+    #[serde(default)]
+    api_key: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct PublishInput {
     visibility: String,
 }
@@ -490,12 +505,70 @@ async fn private(req: &mut Request, env: &Env, db: &Db, rest: &str, method: &str
                 db.revoke_document_reader(&document_id, user_id).await?;
                 return empty_ok();
             }
-            (Some("ai"), "POST") | (Some("profile-summaries"), "POST") => {
+            (Some("ai"), "POST") => {
                 owned(db, &principal, &document_id).await?;
-                return Err(ApiError::Unavailable("AI 队列迁移中，尚未在此版本启用".to_owned()));
+                let input: AiTaskInput = req.json().await?;
+                let document = db
+                    .get_document(&document_id)
+                    .await?
+                    .ok_or(ApiError::NotFound)?
+                    .document;
+                let revision_id = document
+                    .published_revision_id
+                    .clone()
+                    .unwrap_or_else(|| document.current_revision_id.clone());
+                let language = input.target_language.unwrap_or_default();
+                let task = match input.task.as_str() {
+                    "metadata" | "detect_language" => "metadata",
+                    "translate" => "translate",
+                    other => {
+                        return Err(ApiError::BadRequest(format!(
+                            "unsupported AI task: {other}"
+                        )))
+                    }
+                };
+                if db.ai_config().await?.is_none() {
+                    return Err(ApiError::Unavailable(
+                        "AI is not configured by the root administrator".to_owned(),
+                    ));
+                }
+                db.enqueue_ai_task(&document_id, &revision_id, task, &language)
+                    .await?;
+                return json(&json!({ "status": "queued", "task": task }));
+            }
+            (Some("profile-summaries"), "POST") => {
+                owned(db, &principal, &document_id).await?;
+                return Err(ApiError::Unavailable(
+                    "profile summaries are not enabled in this version".to_owned(),
+                ));
             }
             _ => {}
         }
+    }
+    if rest == "admin/ai" {
+        let root: Option<String> = db.root_user_id().await?;
+        if root.as_deref() != Some(principal.user_id.as_str()) {
+            return Err(ApiError::Forbidden("root administrator only".to_owned()));
+        }
+        if method == "GET" {
+            let config = db.ai_config().await?;
+            return json(&json!({
+                "base_url": config.as_ref().map(|c| c.base_url.clone()).unwrap_or_default(),
+                "model": config.as_ref().map(|c| c.model.clone()).unwrap_or_default(),
+                "api_key_set": config.is_some(),
+            }));
+        }
+        if method == "PUT" {
+            let input: AiConfigInput = req.json().await?;
+            crate::ai::validate_base_url(&input.base_url)?;
+            if input.model.trim().is_empty() {
+                return Err(ApiError::BadRequest("model is required".to_owned()));
+            }
+            db.save_ai_config(input.base_url.trim(), input.model.trim(), input.api_key.as_deref())
+                .await?;
+            return json(&json!({ "status": "saved" }));
+        }
+        return Err(ApiError::NotFound);
     }
     if rest.starts_with("admin/") {
         return Err(ApiError::Unavailable("admin 接口迁移中，尚未在此版本启用".to_owned()));
