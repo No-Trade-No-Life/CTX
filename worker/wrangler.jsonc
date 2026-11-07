@@ -4,6 +4,7 @@
   "main": "build/worker/shim.mjs",
   "compatibility_date": "2026-11-01",
   "workers_dev": true,
+  "routes": [{ "pattern": "docs-cf.ntnl.io", "custom_domain": true }],
   "assets": {
     "directory": "../web/dist",
     "binding": "ASSETS",
