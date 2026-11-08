@@ -48,16 +48,3 @@ jobs:
           files: |
             ctx-x86_64-unknown-linux-gnu.tar.gz
             ctx-x86_64-unknown-linux-gnu.tar.gz.sha256
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: Deploy through AWS Systems Manager
-        env:
-          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-        run: bash .github/scripts/send-deploy.sh "$EC2_INSTANCE_ID" "${{ needs.build.outputs.tag }}"
