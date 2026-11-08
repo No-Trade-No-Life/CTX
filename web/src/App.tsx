@@ -409,7 +409,7 @@ function DocsShell({ auth }: { auth: AuthSdk }) {
             path="/admin/performance"
             element={
               me.data.is_root ? (
-                <PerformancePage />
+                <PerformancePage auth={auth} />
               ) : (
                 <Navigate to="/documents" replace />
               )
@@ -3724,23 +3724,11 @@ function ApiKeysPage({ auth }: { auth: AuthSdk }) {
   )
 }
 
-function PerformancePage() {
+function PerformancePage({ auth }: { auth: AuthSdk }) {
   const { t } = useI18n()
-  const [stored, setStored] = useState(
-    () => window.localStorage.getItem("docs.admin-token") ?? ""
-  )
-  const [draft, setDraft] = useState(stored)
   const performance = useQuery({
-    queryKey: ["admin-performance", stored],
-    queryFn: async () => {
-      const response = await fetch("/api/v1/admin/performance", {
-        headers: { authorization: `Bearer ${stored}` },
-      })
-      if (response.status === 401) throw new Error(t("performanceUnauthorized"))
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
-      return (await response.json()) as RoutePerformance
-    },
-    enabled: stored.length > 0,
+    queryKey: ["admin-performance"],
+    queryFn: () => request<RoutePerformance>("/api/v1/admin/performance", auth),
   })
 
   return (
@@ -3752,33 +3740,16 @@ function PerformancePage() {
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           {t("performanceDescription")}
         </p>
-        <form
-          className="mt-4 flex flex-wrap items-end gap-2"
-          onSubmit={(event) => {
-            event.preventDefault()
-            const next = draft.trim()
-            if (next) window.localStorage.setItem("docs.admin-token", next)
-            else window.localStorage.removeItem("docs.admin-token")
-            setStored(next)
-          }}
+        <Button
+          className="mt-4"
+          disabled={performance.isFetching}
+          onClick={() => void performance.refetch()}
+          variant="outline"
         >
-          <label className="flex min-w-64 flex-1 flex-col gap-1 text-xs text-muted-foreground">
-            {t("performanceToken")}
-            <input
-              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-foreground outline-none focus-visible:border-ring"
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="ADMIN_TOKEN"
-              type="password"
-              value={draft}
-            />
-          </label>
-          <Button type="submit" variant="outline">
-            {t("performanceLoad")}
-          </Button>
-        </form>
-        <p className="mt-2 text-xs text-muted-foreground">{t("performanceTokenHint")}</p>
+          {t("performanceLoad")}
+        </Button>
       </section>
-      {stored.length === 0 ? null : performance.isPending ? (
+      {performance.isPending ? (
         <Skeleton className="h-64 rounded-lg" />
       ) : performance.error ? (
         <PageError error={performance.error} />

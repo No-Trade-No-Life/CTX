@@ -155,19 +155,6 @@ async fn dispatch(req: &mut Request, env: &Env, path: &str, method: &str, url: &
             return json(&db.public_user_profile(owner_id, language.as_deref()).await?);
         }
     }
-    if path == "/api/v1/admin/performance" {
-        let provided = req
-            .headers()
-            .get("authorization")
-            .ok()
-            .flatten()
-            .and_then(|value| value.strip_prefix("Bearer ").map(str::to_owned));
-        let expected = env.secret("ADMIN_TOKEN").map(|s| s.to_string()).unwrap_or_default();
-        if expected.is_empty() || provided.as_deref() != Some(expected.as_str()) {
-            return Err(ApiError::Unauthorized("invalid or expired bearer token".to_owned()));
-        }
-        return json(&db.route_performance().await?);
-    }
     if let Some(rest) = path.strip_prefix("/api/v1/") {
         return private(req, env, &db, rest, method, url).await;
     }
@@ -296,6 +283,14 @@ fn publication_visibility(value: &str) -> std::result::Result<&'static str, ApiE
         "private" => Ok("private"),
         _ => Err(ApiError::BadRequest("visibility must be public or private".to_owned())),
     }
+}
+
+async fn require_root(db: &Db, principal: &Principal) -> std::result::Result<(), ApiError> {
+    let root: Option<String> = db.root_user_id().await?;
+    if root.as_deref() != Some(principal.user_id.as_str()) {
+        return Err(ApiError::Forbidden("root administrator only".to_owned()));
+    }
+    Ok(())
 }
 
 async fn owned(db: &Db, principal: &Principal, document_id: &str) -> std::result::Result<(), ApiError> {
@@ -545,11 +540,12 @@ async fn private(req: &mut Request, env: &Env, db: &Db, rest: &str, method: &str
             _ => {}
         }
     }
+    if rest == "admin/performance" && method == "GET" {
+        require_root(db, &principal).await?;
+        return json(&db.route_performance().await?);
+    }
     if rest == "admin/ai" {
-        let root: Option<String> = db.root_user_id().await?;
-        if root.as_deref() != Some(principal.user_id.as_str()) {
-            return Err(ApiError::Forbidden("root administrator only".to_owned()));
-        }
+        require_root(db, &principal).await?;
         if method == "GET" {
             let config = db.ai_config().await?;
             return json(&json!({

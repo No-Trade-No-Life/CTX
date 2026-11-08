@@ -221,9 +221,7 @@ const englishCopy = defineCopy({
   aiRequestsDescription:
     "Every metadata extraction, independent profile summary, and Markdown translation is recorded here.",
   performanceDescription:
-    "Per-route latency for the last 24 hours, measured by the Worker itself. Paste the ADMIN_TOKEN to read it.",
-  performanceToken: "Admin token",
-  performanceTokenHint: "Stored in this browser only; sent as a bearer token.",
+    "Per-route latency for the last 24 hours, measured by the Worker itself.",
   performanceLoad: "Load",
   performanceRequests: "Requests",
   performanceAverage: "Average",
@@ -231,7 +229,6 @@ const englishCopy = defineCopy({
   performanceP95: "Worst",
   performanceErrors: "Errors",
   performanceEmpty: "No requests recorded in the last 24 hours.",
-  performanceUnauthorized: "That admin token was rejected.",
   aiRequestDocument: "Document",
   aiRequestTask: "Task",
   aiRequestTargetLanguage: "Target language",
@@ -582,9 +579,7 @@ const chineseCopy: Copy = {
   aiRequestsDescription:
     "元信息提取、独立主页总结和 Markdown 翻译都会记录在这里。",
   performanceDescription:
-    "按路由统计最近 24 小时的接口耗时，数据由 Worker 自己采集。填入 ADMIN_TOKEN 才能读取。",
-  performanceToken: "管理令牌",
-  performanceTokenHint: "只保存在这个浏览器里，请求时作为 Bearer 发送。",
+    "按路由统计最近 24 小时的接口耗时，数据由 Worker 自己采集。",
   performanceLoad: "刷新",
   performanceRequests: "请求数",
   performanceAverage: "平均",
@@ -592,7 +587,6 @@ const chineseCopy: Copy = {
   performanceP95: "最慢",
   performanceErrors: "错误",
   performanceEmpty: "最近 24 小时没有记录到请求。",
-  performanceUnauthorized: "管理令牌被拒绝。",
   aiRequestDocument: "文档",
   aiRequestTask: "任务",
   aiRequestTargetLanguage: "目标语言",
