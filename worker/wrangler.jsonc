@@ -5,7 +5,8 @@
   "compatibility_date": "2026-11-01",
   "workers_dev": true,
   "routes": [
-    { "pattern": "docs.ntnl.io/*", "zone_name": "ntnl.io" }
+    { "pattern": "docs.ntnl.io/*", "zone_name": "ntnl.io" },
+    { "pattern": "ctx.ntnl.io/*", "zone_name": "ntnl.io" }
   ],
   "assets": {
     "directory": "../web/dist",
